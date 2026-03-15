@@ -12,6 +12,8 @@
       "name": "WanderWal"
     }
   ],
+  "manifest": "https://raw.githubusercontent.com/WanderWal/feature-creep/refs/heads/main/module.json",
+  "download": "https://github.com/WanderWal/feature-creep/archive/refs/tags/1.0.0.zip",
   "esmodules": [
     "scripts/main.js"
   ],
