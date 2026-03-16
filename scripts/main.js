@@ -214,6 +214,9 @@ async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
     "- advancements: array of dnd5e advancement objects.",
     "- itemMacro: object with name and command for Item Macro module.",
     "- integrationFlags: object containing optional item flag paths/values for dae, dime, and midi-qol.",
+    "- If itemMacro.command is present, also provide midi-qol linkage so ItemMacro executes.",
+    "- Never include item description fields in details.",
+    "- If text describes replacing a spell's damage type (e.g. 'change its damage type to Psychic'), provide a working itemMacro.command that handles that replacement at use time and include midi-qol linkage flags.",
     "Do not include commentary.",
   ].join("\n");
 
@@ -259,7 +262,57 @@ async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
     throw new Error("AI response did not parse into an object");
   }
 
-  return parsed;
+  return enhancePayloadForKnownPatterns({
+    payload: parsed,
+    item,
+    descriptionText,
+  });
+}
+
+function enhancePayloadForKnownPatterns({ payload, item, descriptionText }) {
+  const patched = foundry.utils.deepClone(payload ?? {});
+  const text = String(descriptionText || "");
+
+  const hasDamageSpellTrigger = /when\s+you\s+cast\s+a\s+spell\s+that\s+deals\s+damage/i.test(text);
+  const hasPsychicSwap = /change\s+(?:its|the)\s+damage\s+type\s+to\s+psychic/i.test(text);
+
+  if (hasDamageSpellTrigger && hasPsychicSwap) {
+    const existingCommand = String(patched?.itemMacro?.command || "").trim();
+
+    if (!existingCommand) {
+      patched.itemMacro = {
+        ...(patched.itemMacro ?? {}),
+        name: String(patched?.itemMacro?.name || `${item.name} (Psychic Damage)`).trim(),
+        command: [
+          "if (typeof workflow === \"undefined\" || !workflow) return;",
+          "const label = \"Psychic Spells\";",
+          "const shouldConvert = await Dialog.confirm({",
+          "  title: label,",
+          "  content: `<p>Change this spell's damage type to Psychic?</p>`,",
+          "  yes: () => true,",
+          "  no: () => false,",
+          "  defaultYes: true",
+          "});",
+          "if (!shouldConvert) return;",
+          "if (Array.isArray(workflow.damageDetail)) {",
+          "  for (const part of workflow.damageDetail) {",
+          "    if (part && typeof part === \"object\") part.type = \"psychic\";",
+          "  }",
+          "}",
+          "if (\"defaultDamageType\" in workflow) workflow.defaultDamageType = \"psychic\";"
+        ].join("\n"),
+      };
+    }
+
+    patched.integrationFlags = {
+      ...(patched.integrationFlags ?? {}),
+      "flags.midi-qol.onUseMacroName": String(
+        patched?.integrationFlags?.["flags.midi-qol.onUseMacroName"] || "[postActiveEffects]ItemMacro"
+      ).trim(),
+    };
+  }
+
+  return patched;
 }
 
 function extractTextFromAnthropicResponse(data) {
@@ -324,6 +377,8 @@ async function applyPayloadToItem(item, payload) {
   if (payload.integrationFlags && typeof payload.integrationFlags === "object") {
     await applyIntegrationFlags(item, payload.integrationFlags);
   }
+
+  await normalizeMacroIntegration(item);
 }
 
 function toActivityMap(activities) {
@@ -396,6 +451,58 @@ async function applyIntegrationFlags(item, integrationFlags) {
   if (Object.keys(updates).length > 0) {
     await item.update(updates);
   }
+}
+
+async function normalizeMacroIntegration(item) {
+  const itemMacro = foundry.utils.deepClone(item.flags?.itemacro?.macro ?? {});
+  const daeMacro = foundry.utils.deepClone(item.flags?.dae?.macro ?? {});
+
+  const itemMacroCommand = String(itemMacro.command ?? "").trim();
+  const daeCommand = String(daeMacro.command ?? "").trim();
+  const effectiveCommand = itemMacroCommand || daeCommand;
+
+  if (!effectiveCommand) return;
+
+  const updates = {};
+
+  if (!itemMacroCommand) {
+    updates["flags.itemacro.macro.command"] = effectiveCommand;
+  }
+
+  const name = String(itemMacro.name ?? "").trim();
+  if (!name) {
+    updates["flags.itemacro.macro.name"] = item.name || "Generated Item Macro";
+  }
+
+  const type = String(itemMacro.type ?? "").trim();
+  if (!type) {
+    updates["flags.itemacro.macro.type"] = "script";
+  }
+
+  const scope = String(itemMacro.scope ?? "").trim();
+  if (!scope) {
+    updates["flags.itemacro.macro.scope"] = "global";
+  }
+
+  if (!daeCommand) {
+    updates["flags.dae.macro.command"] = effectiveCommand;
+  }
+
+  const onUseMacroName = String(item.flags?.["midi-qol"]?.onUseMacroName ?? "").trim();
+  const normalizedOnUse = ensureItemMacroOnUse(onUseMacroName);
+  if (normalizedOnUse !== onUseMacroName) {
+    updates["flags.midi-qol.onUseMacroName"] = normalizedOnUse;
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await item.update(updates);
+  }
+}
+
+function ensureItemMacroOnUse(onUseMacroName) {
+  if (!onUseMacroName) return "[postActiveEffects]ItemMacro";
+  if (/itemmacro/i.test(onUseMacroName)) return onUseMacroName;
+  return `${onUseMacroName},[postActiveEffects]ItemMacro`;
 }
 
 function htmlToText(html) {
