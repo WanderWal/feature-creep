@@ -71,12 +71,21 @@ Hooks.on("getItemSheetHeaderButtons", (sheet, buttons) => {
   injectLegacyHeaderButton(sheet, buttons);
 });
 
+Hooks.on("getActorSheetHeaderButtons", (sheet, buttons) => {
+  injectLegacyActorHeaderButton(sheet, buttons);
+});
+
 Hooks.on("getHeaderControlsItemSheet5e2", (sheet, buttons) => {
   injectV2HeaderControl(sheet, buttons);
 });
 
+Hooks.on("getHeaderControlsActorSheet5e2", (sheet, buttons) => {
+  injectV2ActorHeaderControl(sheet, buttons);
+});
+
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   injectV2HeaderControl(app, controls);
+  injectV2ActorHeaderControl(app, controls);
 });
 
 function injectLegacyHeaderButton(sheet, buttons) {
@@ -97,6 +106,28 @@ function injectLegacyHeaderButton(sheet, buttons) {
       const shouldRun = await confirmRun();
       if (!shouldRun) return;
       await generateAndApplyForItem(item);
+    },
+  });
+}
+
+function injectLegacyActorHeaderButton(sheet, buttons) {
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eNpcSheet(sheet)) return;
+
+  const existingButton = buttons.find((button) => button?.class === "feature-creep-rebalance-button");
+  if (existingButton) return;
+
+  buttons.unshift({
+    class: "feature-creep-rebalance-button",
+    icon: "fas fa-scale-balanced",
+    label: game.i18n.localize(`${MODULE_ID}.button.rebalance`),
+    onclick: async () => {
+      const actor = sheet.document;
+      if (!actor) return;
+      const targetCr = await promptForTargetCr(actor);
+      if (targetCr === null) return;
+      await rebalanceMonsterForCr(actor, targetCr);
     },
   });
 }
@@ -126,6 +157,31 @@ function injectV2HeaderControl(app, controls) {
   });
 }
 
+function injectV2ActorHeaderControl(app, controls) {
+  if (!Array.isArray(controls)) return;
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eNpcSheet(app)) return;
+
+  const existingControl = controls.find((control) => control?.action === "feature-creep-rebalance");
+  if (existingControl) return;
+
+  controls.unshift({
+    action: "feature-creep-rebalance",
+    class: "feature-creep-rebalance-button",
+    icon: "fas fa-scale-balanced",
+    label: game.i18n.localize(`${MODULE_ID}.button.rebalance`),
+    visible: true,
+    onClick: async () => {
+      const actor = app?.document;
+      if (!actor) return;
+      const targetCr = await promptForTargetCr(actor);
+      if (targetCr === null) return;
+      await rebalanceMonsterForCr(actor, targetCr);
+    },
+  });
+}
+
 function canUseModule() {
   return game.user?.isGM;
 }
@@ -134,6 +190,12 @@ function isDnd5eItemSheet(sheet) {
   const item = sheet?.document;
   if (!item) return false;
   return game.system?.id === "dnd5e" && item.documentName === "Item";
+}
+
+function isDnd5eNpcSheet(sheet) {
+  const actor = sheet?.document;
+  if (!actor) return false;
+  return game.system?.id === "dnd5e" && actor.documentName === "Actor" && actor.type === "npc";
 }
 
 async function confirmRun() {
@@ -152,6 +214,64 @@ async function confirmRun() {
     yes: () => true,
     no: () => false,
     defaultYes: true,
+  });
+}
+
+async function promptForTargetCr(actor) {
+  const currentCr = formatChallengeRating(actor.system?.details?.cr) || "0";
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const dialog = new Dialog({
+      title: game.i18n.localize(`${MODULE_ID}.rebalanceDialog.title`),
+      content: `
+        <form class="feature-creep-rebalance-form">
+          <p>${game.i18n.format(`${MODULE_ID}.rebalanceDialog.content`, {
+            name: foundry.utils.escapeHTML(actor.name ?? ""),
+            currentCr,
+          })}</p>
+          <div class="form-group">
+            <label for="feature-creep-target-cr">${game.i18n.localize(`${MODULE_ID}.rebalanceDialog.targetLabel`)}</label>
+            <input id="feature-creep-target-cr" name="targetCr" type="text" value="${foundry.utils.escapeHTML(currentCr)}" placeholder="1/2" />
+          </div>
+        </form>
+      `,
+      buttons: {
+        cancel: {
+          label: game.i18n.localize("Cancel"),
+          callback: () => finish(null),
+        },
+        submit: {
+          label: game.i18n.localize(`${MODULE_ID}.rebalanceDialog.submit`),
+          callback: (html) => {
+            const input = html?.[0]?.querySelector("[name='targetCr']");
+            const targetCr = parseChallengeRating(input?.value ?? "");
+            if (targetCr === null) {
+              ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.invalidTargetCr`));
+              finish(null);
+              return;
+            }
+
+            finish(targetCr);
+          },
+        },
+      },
+      default: "submit",
+      close: () => finish(null),
+      render: (html) => {
+        const input = html?.[0]?.querySelector("[name='targetCr']");
+        input?.focus();
+        input?.select();
+      },
+    });
+
+    dialog.render(true);
   });
 }
 
@@ -195,13 +315,46 @@ async function generateAndApplyForItem(item) {
   }
 }
 
-async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
-  const model = game.settings.get(MODULE_ID, "model");
-  const maxTokens = Number(game.settings.get(MODULE_ID, "maxTokens")) || 3000;
-  const configuredEndpoint = String(game.settings.get(MODULE_ID, "requestEndpoint") || "").trim();
-  const requestEndpoint = configuredEndpoint || ANTHROPIC_ENDPOINT;
-  const relayAuthHeader = String(game.settings.get(MODULE_ID, "relayAuthHeader") || "").trim();
+async function rebalanceMonsterForCr(actor, targetCr) {
+  try {
+    const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
+    if (!apiKey) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
+      return;
+    }
 
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.rebalancing`, {
+      name: actor.name,
+      cr: formatChallengeRating(targetCr),
+    }));
+
+    const payload = await requestMonsterRebalance({
+      actor,
+      targetCr,
+      apiKey,
+    });
+
+    await applyMonsterRebalance(actor, payload, targetCr);
+
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.rebalanceSuccess`, {
+      name: actor.name,
+      cr: formatChallengeRating(targetCr),
+    }));
+  } catch (error) {
+    console.error(`${MODULE_ID} | monster rebalance failed`, error);
+
+    const message = String(error?.message || "");
+    const isCorsError = error instanceof TypeError && /fetch|failed|cors|network/i.test(message);
+    if (isCorsError) {
+      ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.corsBlocked`));
+      return;
+    }
+
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.rebalanceFailed`));
+  }
+}
+
+async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
   const systemPrompt = [
     "You are a Foundry VTT v13 + D&D5e (2024) data builder.",
     "Return ONLY valid JSON, no markdown.",
@@ -226,6 +379,68 @@ async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
     "Item description:",
     descriptionText,
   ].join("\n\n");
+
+  const parsed = await requestAnthropicJson({
+    systemPrompt,
+    userPrompt,
+    apiKey,
+  });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  return enhancePayloadForKnownPatterns({
+    payload: parsed,
+    item,
+    descriptionText,
+  });
+}
+
+async function requestMonsterRebalance({ actor, targetCr, apiKey }) {
+  const systemPrompt = [
+    "You are a Foundry VTT v13 + D&D5e (2024) monster rebalancer.",
+    "Return ONLY valid JSON, no markdown.",
+    "The JSON object must contain these keys: actorUpdates (object), itemUpdates (array).",
+    "- actorUpdates: flat object of Foundry update paths/values for the NPC actor.",
+    "- itemUpdates: array of objects with id, name, type, and updates.",
+    "- Preserve the monster's identity, role, and signature abilities while adjusting numbers for the requested CR.",
+    "- Prefer updating existing attacks, actions, spells, and save DCs instead of inventing new actions.",
+    "- For action mechanics, use exact D&D5e activity paths whenever possible, especially system.activities.<activityId>.attack.bonus, system.activities.<activityId>.attack.flat, system.activities.<activityId>.damage.parts, system.activities.<activityId>.save.dc.formula, system.activities.<activityId>.save.dc.calculation, and system.activities.<activityId>.description.",
+    "- Do not only rewrite descriptive text. When an action's text changes for damage, attack bonus, save DC, recharge, or range, update the matching system.activities paths too.",
+    "- You may update action descriptions when needed to keep text aligned with changed damage, DCs, save text, recharge, or scaling.",
+    "- Do not remove items.",
+    "- Use existing item ids when provided.",
+    "- Provide only update paths and values that should change.",
+    "- Set challenge rating data in actorUpdates.",
+    "Do not include commentary.",
+  ].join("\n");
+
+  const userPrompt = [
+    `Target challenge rating: ${formatChallengeRating(targetCr)} (${targetCr})`,
+    "Current monster snapshot:",
+    JSON.stringify(getMonsterRebalanceSnapshot(actor), null, 2),
+  ].join("\n\n");
+
+  const parsed = await requestAnthropicJson({
+    systemPrompt,
+    userPrompt,
+    apiKey,
+  });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  return parsed;
+}
+
+async function requestAnthropicJson({ systemPrompt, userPrompt, apiKey }) {
+  const model = game.settings.get(MODULE_ID, "model");
+  const maxTokens = Number(game.settings.get(MODULE_ID, "maxTokens")) || 3000;
+  const configuredEndpoint = String(game.settings.get(MODULE_ID, "requestEndpoint") || "").trim();
+  const requestEndpoint = configuredEndpoint || ANTHROPIC_ENDPOINT;
+  const relayAuthHeader = String(game.settings.get(MODULE_ID, "relayAuthHeader") || "").trim();
 
   const headers = {
     "content-type": "application/json",
@@ -257,16 +472,7 @@ async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
   const data = await response.json();
   const rawText = extractTextFromAnthropicResponse(data);
   const parsed = parseAiJson(rawText);
-
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("AI response did not parse into an object");
-  }
-
-  return enhancePayloadForKnownPatterns({
-    payload: parsed,
-    item,
-    descriptionText,
-  });
+  return parsed;
 }
 
 function enhancePayloadForKnownPatterns({ payload, item, descriptionText }) {
@@ -379,6 +585,318 @@ async function applyPayloadToItem(item, payload) {
   }
 
   await normalizeMacroIntegration(item);
+}
+
+async function applyMonsterRebalance(actor, payload, targetCr) {
+  const actorUpdates = sanitizeActorRebalanceUpdates(actor, payload?.actorUpdates, targetCr);
+  if (Object.keys(actorUpdates).length > 0) {
+    await actor.update(actorUpdates);
+  }
+
+  const itemUpdates = sanitizeMonsterItemUpdates(actor, payload?.itemUpdates);
+  for (const itemUpdate of itemUpdates) {
+    const item = actor.items.get(itemUpdate.id);
+    if (!item) continue;
+    await item.update(itemUpdate.updates);
+  }
+}
+
+function sanitizeActorRebalanceUpdates(actor, rawUpdates, targetCr) {
+  const updates = {};
+  const source = rawUpdates && typeof rawUpdates === "object" ? rawUpdates : {};
+
+  for (const [path, value] of Object.entries(source)) {
+    if (!isAllowedActorRebalancePath(path)) continue;
+    updates[path] = value;
+  }
+
+  updates["system.details.cr"] = targetCr;
+
+  const hpMax = Number(updates["system.attributes.hp.max"]);
+  if (Number.isFinite(hpMax) && hpMax > 0 && updates["system.attributes.hp.value"] === undefined) {
+    updates["system.attributes.hp.value"] = scaleHpValue(actor, hpMax);
+  }
+
+  const acFlat = Number(updates["system.attributes.ac.flat"]);
+  if (Number.isFinite(acFlat) && !String(updates["system.attributes.ac.calc"] ?? "").trim()) {
+    updates["system.attributes.ac.calc"] = actor.system?.attributes?.ac?.calc === "flat" ? "flat" : "natural";
+  }
+
+  return updates;
+}
+
+function sanitizeMonsterItemUpdates(actor, rawItemUpdates) {
+  if (!Array.isArray(rawItemUpdates)) return [];
+
+  const sanitized = [];
+
+  for (const entry of rawItemUpdates) {
+    if (!entry || typeof entry !== "object") continue;
+
+    const item = resolveActorItem(actor, entry);
+    if (!item) continue;
+
+    const source = entry.updates && typeof entry.updates === "object" ? entry.updates : {};
+    const updates = {};
+
+    for (const [path, value] of Object.entries(source)) {
+      if (!isAllowedItemRebalancePath(path)) continue;
+      updates[path] = value;
+    }
+
+    applyLegacyMonsterItemUpdateTranslations(item, updates);
+
+    if (Object.keys(updates).length === 0) continue;
+    sanitized.push({ id: item.id, updates });
+  }
+
+  return sanitized;
+}
+
+function isAllowedActorRebalancePath(path) {
+  if (typeof path !== "string" || !path.startsWith("system.")) return false;
+
+  const blockedPrefixes = [
+    "system.details.biography",
+    "system.details.notes",
+    "system.details.appearance",
+    "system.attributes.attunement",
+  ];
+
+  return !blockedPrefixes.some((prefix) => path.startsWith(prefix));
+}
+
+function isAllowedItemRebalancePath(path) {
+  if (path === "name") return true;
+  if (typeof path !== "string") return false;
+  if (!path.startsWith("system.") && !path.startsWith("flags.")) return false;
+
+  const blockedPrefixes = [
+    "flags.core",
+  ];
+
+  return !blockedPrefixes.some((prefix) => path.startsWith(prefix));
+}
+
+function applyLegacyMonsterItemUpdateTranslations(item, updates) {
+  if (!updates || typeof updates !== "object") return;
+
+  translateAttackBonusUpdates(item, updates);
+  translateDamagePartUpdates(item, updates);
+  translateSaveDcUpdates(item, updates);
+}
+
+function translateAttackBonusUpdates(item, updates) {
+  if (updates["system.attack.bonus"] === undefined) return;
+
+  const attackActivities = getItemActivitiesByType(item, "attack");
+  for (const activity of attackActivities) {
+    updates[`system.activities.${activity.id}.attack.bonus`] = updates["system.attack.bonus"];
+    if (updates[`system.activities.${activity.id}.attack.flat`] === undefined) {
+      updates[`system.activities.${activity.id}.attack.flat`] = true;
+    }
+  }
+}
+
+function translateDamagePartUpdates(item, updates) {
+  if (updates["system.damage.parts"] === undefined) return;
+
+  const damageParts = updates["system.damage.parts"];
+  const targetActivities = item.system?.activities?.filter((activity) => Array.isArray(activity.damage?.parts) && activity.damage.parts.length) ?? [];
+
+  for (const activity of targetActivities) {
+    updates[`system.activities.${activity.id}.damage.parts`] = damageParts;
+  }
+}
+
+function translateSaveDcUpdates(item, updates) {
+  const saveDc = updates["system.save.dc.formula"] ?? updates["system.save.dc"];
+  if (saveDc === undefined) return;
+
+  const saveActivities = getItemActivitiesByType(item, "save");
+  for (const activity of saveActivities) {
+    updates[`system.activities.${activity.id}.save.dc.formula`] = saveDc;
+    if (updates[`system.activities.${activity.id}.save.dc.calculation`] === undefined) {
+      updates[`system.activities.${activity.id}.save.dc.calculation`] = "";
+    }
+  }
+}
+
+function getItemActivitiesByType(item, type) {
+  return item.system?.activities?.getByType?.(type) ?? [];
+}
+
+function resolveActorItem(actor, itemUpdate) {
+  const explicitId = String(itemUpdate.id || "").trim();
+  if (explicitId) return actor.items.get(explicitId) ?? null;
+
+  const name = normalizeForLookup(itemUpdate.name);
+  const type = String(itemUpdate.type || "").trim().toLowerCase();
+  if (!name) return null;
+
+  return actor.items.find((item) => {
+    if (normalizeForLookup(item.name) !== name) return false;
+    if (!type) return true;
+    return String(item.type || "").trim().toLowerCase() === type;
+  }) ?? null;
+}
+
+function scaleHpValue(actor, newMaxHp) {
+  const currentValue = Number(actor.system?.attributes?.hp?.value ?? 0);
+  const currentMax = Number(actor.system?.attributes?.hp?.max ?? 0);
+  if (!Number.isFinite(currentValue) || currentValue < 0) return newMaxHp;
+  if (currentValue === 0) return 0;
+  if (!Number.isFinite(currentMax) || currentMax <= 0) return newMaxHp;
+  if (currentValue >= currentMax) return newMaxHp;
+
+  return Math.max(1, Math.round((currentValue / currentMax) * newMaxHp));
+}
+
+function getMonsterRebalanceSnapshot(actor) {
+  const system = actor.system ?? {};
+
+  return {
+    actor: {
+      id: actor.id,
+      name: actor.name,
+      type: actor.type,
+      size: system.traits?.size ?? null,
+      cr: system.details?.cr ?? null,
+      proficiencyBonus: system.attributes?.prof ?? null,
+      ac: {
+        value: system.attributes?.ac?.value ?? null,
+        flat: system.attributes?.ac?.flat ?? null,
+        calc: system.attributes?.ac?.calc ?? null,
+        formula: system.attributes?.ac?.formula ?? null,
+      },
+      hp: {
+        value: system.attributes?.hp?.value ?? null,
+        max: system.attributes?.hp?.max ?? null,
+        formula: system.attributes?.hp?.formula ?? null,
+      },
+      movement: foundry.utils.deepClone(system.attributes?.movement ?? {}),
+      senses: foundry.utils.deepClone(system.attributes?.senses ?? {}),
+      spellcasting: {
+        attack: system.attributes?.spell?.attack ?? null,
+        dc: system.attributes?.spell?.dc ?? null,
+        level: system.attributes?.spell?.level ?? null,
+      },
+      abilities: summarizeAbilities(system.abilities ?? {}),
+      biography: htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 4000),
+    },
+    items: actor.items.map((item) => summarizeMonsterItem(item)),
+  };
+}
+
+function summarizeAbilities(abilities) {
+  const summary = {};
+
+  for (const [key, value] of Object.entries(abilities)) {
+    summary[key] = {
+      value: value?.value ?? null,
+      mod: value?.mod ?? null,
+      proficient: value?.proficient ?? null,
+      save: value?.save ?? null,
+    };
+  }
+
+  return summary;
+}
+
+function summarizeMonsterItem(item) {
+  return {
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    description: htmlToText(item.system?.description?.value ?? "").trim().slice(0, 4000),
+    suggestedUpdatePaths: getSuggestedItemUpdatePaths(item),
+    activation: foundry.utils.deepClone(item.system?.activation ?? {}),
+    uses: foundry.utils.deepClone(item.system?.uses ?? {}),
+    activities: summarizeActivities(item.system?.activities ?? {}),
+    attackBonus: item.system?.attack?.bonus ?? null,
+    save: foundry.utils.deepClone(item.system?.save ?? {}),
+    damage: foundry.utils.deepClone(item.system?.damage ?? {}),
+  };
+}
+
+function summarizeActivities(activities) {
+  const summary = [];
+
+  for (const [id, activity] of Object.entries(activities)) {
+    summary.push({
+      id,
+      name: activity?.name ?? null,
+      type: activity?.type ?? null,
+      suggestedUpdatePaths: getSuggestedActivityUpdatePaths(id),
+      description: htmlToText(activity?.description ?? "").trim().slice(0, 2000),
+      activation: foundry.utils.deepClone(activity?.activation ?? {}),
+      attack: foundry.utils.deepClone(activity?.attack ?? {}),
+      damage: foundry.utils.deepClone(activity?.damage ?? {}),
+      save: foundry.utils.deepClone(activity?.save ?? {}),
+      range: foundry.utils.deepClone(activity?.range ?? {}),
+      target: foundry.utils.deepClone(activity?.target ?? {}),
+      uses: foundry.utils.deepClone(activity?.uses ?? {}),
+    });
+  }
+
+  return summary;
+}
+
+function getSuggestedItemUpdatePaths(item) {
+  const paths = ["system.description.value"];
+
+  for (const activity of item.system?.activities ?? []) {
+    paths.push(...getSuggestedActivityUpdatePaths(activity.id));
+  }
+
+  return paths;
+}
+
+function getSuggestedActivityUpdatePaths(activityId) {
+  return [
+    `system.activities.${activityId}.description`,
+    `system.activities.${activityId}.activation`,
+    `system.activities.${activityId}.range`,
+    `system.activities.${activityId}.target`,
+    `system.activities.${activityId}.attack.bonus`,
+    `system.activities.${activityId}.attack.flat`,
+    `system.activities.${activityId}.damage.parts`,
+    `system.activities.${activityId}.damage.onSave`,
+    `system.activities.${activityId}.save.ability`,
+    `system.activities.${activityId}.save.dc.calculation`,
+    `system.activities.${activityId}.save.dc.formula`,
+    `system.activities.${activityId}.uses`,
+  ];
+}
+
+function parseChallengeRating(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return null;
+
+  const fractionMatch = trimmed.match(/^(\d+)\s*\/\s*(\d+)$/);
+  if (fractionMatch) {
+    const numerator = Number(fractionMatch[1]);
+    const denominator = Number(fractionMatch[2]);
+    if (!denominator) return null;
+    return numerator / denominator;
+  }
+
+  const numeric = Number(trimmed);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return numeric;
+}
+
+function formatChallengeRating(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "";
+  if (numeric === 0.125) return "1/8";
+  if (numeric === 0.25) return "1/4";
+  if (numeric === 0.5) return "1/2";
+  return `${numeric}`;
+}
+
+function normalizeForLookup(value) {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function toActivityMap(activities) {
