@@ -16,6 +16,7 @@
   "feature-creep.button.generate": "AI Setup",
   "feature-creep.button.rebalance": "AI Rebalance",
   "feature-creep.button.guessCr": "AI Guess CR",
+  "feature-creep.button.generateLoot": "AI Generate Loot",
   "feature-creep.notifications.apiKeyMissing": "Set your Anthropic API key in Feature Creep settings first.",
   "feature-creep.notifications.gmOnly": "Feature Creep can only be used by the Game Master.",
   "feature-creep.notifications.noDescription": "Item description is empty. Add a description before running AI setup.",
@@ -31,6 +32,9 @@
   "feature-creep.notifications.invalidResponse": "Anthropic returned an invalid response format.",
   "feature-creep.notifications.corsBlocked": "AI request blocked by CORS. Set Feature Creep \"AI Request Endpoint\" to a CORS-enabled relay/proxy.",
   "feature-creep.notifications.failed": "Feature Creep failed. Check console for details.",
+  "feature-creep.notifications.generatingLoot": "Generating loot for {name}…",
+  "feature-creep.notifications.lootAdded": "Added {count} loot item(s) to {name}.",
+  "feature-creep.notifications.lootFailed": "Feature Creep failed while generating loot. Check console for details.",
   "feature-creep.dialog.title": "Feature Creep",
   "feature-creep.dialog.content": "Generate and apply item details, activities, effects, advancements, and Item Macro from this item description?",
   "feature-creep.rebalanceDialog.title": "Rebalance Monster",
@@ -43,5 +47,12 @@
   "feature-creep.guessCr.noRationale": "No reasoning provided.",
   "feature-creep.confidence.low": "Low",
   "feature-creep.confidence.medium": "Medium",
-  "feature-creep.confidence.high": "High"
+  "feature-creep.confidence.high": "High",
+  "feature-creep.lootDialog.title": "Generated Loot: {name}",
+  "feature-creep.lootDialog.colName": "Name",
+  "feature-creep.lootDialog.colType": "Type",
+  "feature-creep.lootDialog.colQty": "Qty",
+  "feature-creep.lootDialog.colPrice": "Price",
+  "feature-creep.lootDialog.noItems": "No loot items were generated.",
+  "feature-creep.lootDialog.addToInventory": "Add to Inventory"
 }

@@ -74,6 +74,7 @@ Hooks.on("getItemSheetHeaderButtons", (sheet, buttons) => {
 Hooks.on("getActorSheetHeaderButtons", (sheet, buttons) => {
   injectLegacyActorHeaderButton(sheet, buttons);
   injectLegacyActorGuessButton(sheet, buttons);
+  injectLegacyActorLootButton(sheet, buttons);
 });
 
 Hooks.on("getHeaderControlsItemSheet5e2", (sheet, buttons) => {
@@ -83,12 +84,14 @@ Hooks.on("getHeaderControlsItemSheet5e2", (sheet, buttons) => {
 Hooks.on("getHeaderControlsActorSheet5e2", (sheet, buttons) => {
   injectV2ActorHeaderControl(sheet, buttons);
   injectV2ActorGuessControl(sheet, buttons);
+  injectV2ActorLootControl(sheet, buttons);
 });
 
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   injectV2HeaderControl(app, controls);
   injectV2ActorHeaderControl(app, controls);
   injectV2ActorGuessControl(app, controls);
+  injectV2ActorLootControl(app, controls);
 });
 
 function injectLegacyHeaderButton(sheet, buttons) {
@@ -224,6 +227,49 @@ function injectV2ActorGuessControl(app, controls) {
       const actor = app?.document;
       if (!actor) return;
       await guessMonsterCr(actor);
+    },
+  });
+}
+
+function injectLegacyActorLootButton(sheet, buttons) {
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eNpcSheet(sheet)) return;
+
+  const existingButton = buttons.find((button) => button?.class === "feature-creep-loot-button");
+  if (existingButton) return;
+
+  buttons.unshift({
+    class: "feature-creep-loot-button",
+    icon: "fas fa-coins",
+    label: game.i18n.localize(`${MODULE_ID}.button.generateLoot`),
+    onclick: async () => {
+      const actor = sheet.document;
+      if (!actor) return;
+      await generateLootForActor(actor);
+    },
+  });
+}
+
+function injectV2ActorLootControl(app, controls) {
+  if (!Array.isArray(controls)) return;
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eNpcSheet(app)) return;
+
+  const existingControl = controls.find((control) => control?.action === "feature-creep-generate-loot");
+  if (existingControl) return;
+
+  controls.unshift({
+    action: "feature-creep-generate-loot",
+    class: "feature-creep-loot-button",
+    icon: "fas fa-coins",
+    label: game.i18n.localize(`${MODULE_ID}.button.generateLoot`),
+    visible: true,
+    onClick: async () => {
+      const actor = app?.document;
+      if (!actor) return;
+      await generateLootForActor(actor);
     },
   });
 }
@@ -443,6 +489,191 @@ async function guessMonsterCr(actor) {
 
     ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.guessCrFailed`));
   }
+}
+
+async function generateLootForActor(actor) {
+  try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
+    const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
+    if (!apiKey) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
+      return;
+    }
+
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingLoot`, {
+      name: actor.name,
+    }));
+
+    const result = await requestMonsterLoot({ actor, apiKey });
+
+    showLootGenerationDialog(actor, result);
+  } catch (error) {
+    console.error(`${MODULE_ID} | loot generation failed`, error);
+
+    const message = String(error?.message || "");
+    const isCorsError = error instanceof TypeError && /fetch|failed|cors|network/i.test(message);
+    if (isCorsError) {
+      ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.corsBlocked`));
+      return;
+    }
+
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.lootFailed`));
+  }
+}
+
+async function requestMonsterLoot({ actor, apiKey }) {
+  const systemPrompt = [
+    "You are a D&D5e (2024) Dungeon Master assistant helping create creature loot tables.",
+    "Return ONLY valid JSON, no markdown.",
+    "The JSON object must contain these keys: loot (array), rationale (string).",
+    "- loot: array of 3-6 items the creature might drop when defeated.",
+    "- Each loot item must have: name (string), type (one of: loot|weapon|equipment|consumable|tool), quantity (number >= 1), description (string), price (object with value (number) and denomination (one of: cp|sp|ep|gp|pp)).",
+    "- Do NOT include any item whose name matches an item in the creature's existingInventory.",
+    "- rationale: brief 1-2 sentence explanation of why these items fit this creature.",
+    "Focus on items appropriate to the creature's nature, habitat, and CR.",
+    "Prefer mundane items for low-CR creatures; magic items are only appropriate at higher CRs.",
+    "Do not include commentary outside the JSON.",
+  ].join("\n");
+
+  const userPrompt = [
+    "Generate loot drop items for this creature. Do NOT suggest any items already in its existingInventory.",
+    "Creature snapshot:",
+    JSON.stringify(getLootGenerationSnapshot(actor), null, 2),
+  ].join("\n\n");
+
+  const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  const loot = Array.isArray(parsed.loot) ? parsed.loot : [];
+  const rationale = String(parsed.rationale ?? "").trim().slice(0, 1200);
+
+  return { loot, rationale };
+}
+
+function getLootGenerationSnapshot(actor) {
+  const system = actor.system ?? {};
+
+  return {
+    name: actor.name,
+    cr: formatChallengeRating(system.details?.cr) || "0",
+    size: system.traits?.size ?? null,
+    creatureType: system.details?.type?.value ?? null,
+    creatureSubtype: system.details?.type?.subtype ?? null,
+    biography: htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 2000),
+    existingInventory: actor.items.map((item) => ({
+      name: item.name,
+      type: item.type,
+    })),
+  };
+}
+
+function showLootGenerationDialog(actor, result) {
+  const VALID_TYPES = new Set(["loot", "weapon", "equipment", "consumable", "tool"]);
+  const VALID_DENOMS = new Set(["cp", "sp", "ep", "gp", "pp"]);
+
+  const sanitizedLoot = result.loot
+    .filter((item) => item && typeof item === "object" && String(item.name || "").trim())
+    .map((item) => ({
+      name: String(item.name || "").trim().slice(0, 100),
+      type: VALID_TYPES.has(String(item.type || "").trim().toLowerCase())
+        ? String(item.type).trim().toLowerCase()
+        : "loot",
+      quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
+      description: String(item.description || "").trim().slice(0, 2000),
+      priceValue: Math.max(0, Number(item.price?.value) || 0),
+      priceDenom: VALID_DENOMS.has(String(item.price?.denomination || "").trim().toLowerCase())
+        ? String(item.price.denomination).trim().toLowerCase()
+        : "gp",
+    }));
+
+  const rationale = foundry.utils.escapeHTML(result.rationale || "");
+
+  const rowsHtml = sanitizedLoot
+    .map(
+      (item) => `
+      <tr>
+        <td>${foundry.utils.escapeHTML(item.name)}</td>
+        <td>${foundry.utils.escapeHTML(item.type)}</td>
+        <td style="text-align:center">${item.quantity}</td>
+        <td style="text-align:right">${item.priceValue} ${foundry.utils.escapeHTML(item.priceDenom)}</td>
+      </tr>`
+    )
+    .join("");
+
+  const tableHtml = sanitizedLoot.length
+    ? `
+      <table class="feature-creep-loot-table">
+        <thead>
+          <tr>
+            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colName`)}</th>
+            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colType`)}</th>
+            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colQty`)}</th>
+            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colPrice`)}</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>`
+    : `<p>${game.i18n.localize(`${MODULE_ID}.lootDialog.noItems`)}</p>`;
+
+  const dialog = new Dialog({
+    title: game.i18n.format(`${MODULE_ID}.lootDialog.title`, {
+      name: foundry.utils.escapeHTML(actor.name ?? ""),
+    }),
+    content: `
+      <div class="feature-creep-loot-result">
+        ${tableHtml}
+        ${rationale ? `<p class="feature-creep-loot-rationale"><em>${rationale}</em></p>` : ""}
+      </div>`,
+    buttons: {
+      add: {
+        label: game.i18n.localize(`${MODULE_ID}.lootDialog.addToInventory`),
+        callback: () => addLootToActorInventory(actor, sanitizedLoot),
+      },
+      close: {
+        label: game.i18n.localize("Close"),
+      },
+    },
+    default: "add",
+  });
+
+  dialog.render(true);
+}
+
+async function addLootToActorInventory(actor, lootItems) {
+  if (!lootItems.length) return;
+
+  const createData = lootItems.map((item) => ({
+    name: item.name,
+    type: item.type,
+    system: {
+      description: { value: item.description ? `<p>${item.description}</p>` : "" },
+      quantity: item.quantity,
+      price: {
+        value: item.priceValue,
+        denomination: item.priceDenom,
+      },
+    },
+    flags: {
+      [MODULE_ID]: {
+        generatedLoot: true,
+        generatedAt: Date.now(),
+      },
+    },
+  }));
+
+  await actor.createEmbeddedDocuments("Item", createData);
+
+  ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.lootAdded`, {
+    count: lootItems.length,
+    name: actor.name,
+  }));
 }
 
 async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
