@@ -73,6 +73,7 @@ Hooks.on("getItemSheetHeaderButtons", (sheet, buttons) => {
 
 Hooks.on("getActorSheetHeaderButtons", (sheet, buttons) => {
   injectLegacyActorHeaderButton(sheet, buttons);
+  injectLegacyActorGuessButton(sheet, buttons);
 });
 
 Hooks.on("getHeaderControlsItemSheet5e2", (sheet, buttons) => {
@@ -81,11 +82,13 @@ Hooks.on("getHeaderControlsItemSheet5e2", (sheet, buttons) => {
 
 Hooks.on("getHeaderControlsActorSheet5e2", (sheet, buttons) => {
   injectV2ActorHeaderControl(sheet, buttons);
+  injectV2ActorGuessControl(sheet, buttons);
 });
 
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   injectV2HeaderControl(app, controls);
   injectV2ActorHeaderControl(app, controls);
+  injectV2ActorGuessControl(app, controls);
 });
 
 function injectLegacyHeaderButton(sheet, buttons) {
@@ -128,6 +131,26 @@ function injectLegacyActorHeaderButton(sheet, buttons) {
       const targetCr = await promptForTargetCr(actor);
       if (targetCr === null) return;
       await rebalanceMonsterForCr(actor, targetCr);
+    },
+  });
+}
+
+function injectLegacyActorGuessButton(sheet, buttons) {
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eNpcSheet(sheet)) return;
+
+  const existingButton = buttons.find((button) => button?.class === "feature-creep-guess-cr-button");
+  if (existingButton) return;
+
+  buttons.unshift({
+    class: "feature-creep-guess-cr-button",
+    icon: "fas fa-magnifying-glass-chart",
+    label: game.i18n.localize(`${MODULE_ID}.button.guessCr`),
+    onclick: async () => {
+      const actor = sheet.document;
+      if (!actor) return;
+      await guessMonsterCr(actor);
     },
   });
 }
@@ -178,6 +201,29 @@ function injectV2ActorHeaderControl(app, controls) {
       const targetCr = await promptForTargetCr(actor);
       if (targetCr === null) return;
       await rebalanceMonsterForCr(actor, targetCr);
+    },
+  });
+}
+
+function injectV2ActorGuessControl(app, controls) {
+  if (!Array.isArray(controls)) return;
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eNpcSheet(app)) return;
+
+  const existingControl = controls.find((control) => control?.action === "feature-creep-guess-cr");
+  if (existingControl) return;
+
+  controls.unshift({
+    action: "feature-creep-guess-cr",
+    class: "feature-creep-guess-cr-button",
+    icon: "fas fa-magnifying-glass-chart",
+    label: game.i18n.localize(`${MODULE_ID}.button.guessCr`),
+    visible: true,
+    onClick: async () => {
+      const actor = app?.document;
+      if (!actor) return;
+      await guessMonsterCr(actor);
     },
   });
 }
@@ -277,6 +323,11 @@ async function promptForTargetCr(actor) {
 
 async function generateAndApplyForItem(item) {
   try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
     const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
     if (!apiKey) {
       ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
@@ -317,6 +368,11 @@ async function generateAndApplyForItem(item) {
 
 async function rebalanceMonsterForCr(actor, targetCr) {
   try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
     const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
     if (!apiKey) {
       ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
@@ -351,6 +407,41 @@ async function rebalanceMonsterForCr(actor, targetCr) {
     }
 
     ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.rebalanceFailed`));
+  }
+}
+
+async function guessMonsterCr(actor) {
+  try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
+    const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
+    if (!apiKey) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
+      return;
+    }
+
+    ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.guessingCr`));
+
+    const result = await requestMonsterCrGuess({
+      actor,
+      apiKey,
+    });
+
+    showCrGuessResultDialog(actor, result);
+  } catch (error) {
+    console.error(`${MODULE_ID} | monster CR guess failed`, error);
+
+    const message = String(error?.message || "");
+    const isCorsError = error instanceof TypeError && /fetch|failed|cors|network/i.test(message);
+    if (isCorsError) {
+      ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.corsBlocked`));
+      return;
+    }
+
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.guessCrFailed`));
   }
 }
 
@@ -433,6 +524,50 @@ async function requestMonsterRebalance({ actor, targetCr, apiKey }) {
   }
 
   return parsed;
+}
+
+async function requestMonsterCrGuess({ actor, apiKey }) {
+  const systemPrompt = [
+    "You are a D&D5e (2024) challenge-rating estimator.",
+    "You will receive an anonymized monster snapshot.",
+    "Do not identify the monster.",
+    "Return ONLY valid JSON, no markdown.",
+    "The JSON object must contain these keys: estimatedCr (number), confidence (string), rationale (string).",
+    "- estimatedCr: numeric CR estimate such as 0.125, 0.25, 0.5, 1, 2, 3, ...",
+    "- confidence: one of low, medium, high.",
+    "- rationale: concise 1-3 sentence explanation based on combat stats and actions.",
+    "Do not include commentary outside JSON.",
+  ].join("\n");
+
+  const userPrompt = [
+    "Estimate the most likely CR for this anonymized monster snapshot:",
+    JSON.stringify(getMonsterCrGuessSnapshot(actor), null, 2),
+  ].join("\n\n");
+
+  const parsed = await requestAnthropicJson({
+    systemPrompt,
+    userPrompt,
+    apiKey,
+  });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  const estimatedCr = parseChallengeRating(parsed.estimatedCr);
+  if (estimatedCr === null) {
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.invalidResponse`));
+    throw new Error("Invalid CR estimate in AI response");
+  }
+
+  const confidence = normalizeCrGuessConfidence(parsed.confidence);
+  const rationale = String(parsed.rationale ?? "").trim().slice(0, 1200);
+
+  return {
+    estimatedCr,
+    confidence,
+    rationale,
+  };
 }
 
 async function requestAnthropicJson({ systemPrompt, userPrompt, apiKey }) {
@@ -752,6 +887,48 @@ function scaleHpValue(actor, newMaxHp) {
   return Math.max(1, Math.round((currentValue / currentMax) * newMaxHp));
 }
 
+function getMonsterCrGuessSnapshot(actor) {
+  const system = actor.system ?? {};
+
+  return {
+    actor: {
+      type: actor.type,
+      size: system.traits?.size ?? null,
+      proficiencyBonus: system.attributes?.prof ?? null,
+      ac: {
+        value: system.attributes?.ac?.value ?? null,
+        flat: system.attributes?.ac?.flat ?? null,
+        calc: system.attributes?.ac?.calc ?? null,
+        formula: system.attributes?.ac?.formula ?? null,
+      },
+      hp: {
+        max: system.attributes?.hp?.max ?? null,
+        formula: system.attributes?.hp?.formula ?? null,
+      },
+      movement: foundry.utils.deepClone(system.attributes?.movement ?? {}),
+      senses: foundry.utils.deepClone(system.attributes?.senses ?? {}),
+      traits: {
+        resistances: foundry.utils.deepClone(system.traits?.dr ?? {}),
+        immunities: foundry.utils.deepClone(system.traits?.di ?? {}),
+        vulnerabilities: foundry.utils.deepClone(system.traits?.dv ?? {}),
+        conditionImmunities: foundry.utils.deepClone(system.traits?.ci ?? {}),
+        languages: foundry.utils.deepClone(system.traits?.languages ?? {}),
+      },
+      spellcasting: {
+        attack: system.attributes?.spell?.attack ?? null,
+        dc: system.attributes?.spell?.dc ?? null,
+        level: system.attributes?.spell?.level ?? null,
+      },
+      abilities: summarizeAbilities(system.abilities ?? {}),
+      biography: redactMonsterIdentityInfo(
+        htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 4000),
+        actor.name,
+      ),
+    },
+    items: actor.items.map((item) => summarizeMonsterItemForCrGuess(item, actor.name)),
+  };
+}
+
 function getMonsterRebalanceSnapshot(actor) {
   const system = actor.system ?? {};
 
@@ -819,6 +996,22 @@ function summarizeMonsterItem(item) {
   };
 }
 
+function summarizeMonsterItemForCrGuess(item, actorName) {
+  return {
+    type: item.type,
+    description: redactMonsterIdentityInfo(
+      htmlToText(item.system?.description?.value ?? "").trim().slice(0, 4000),
+      actorName,
+    ),
+    activation: foundry.utils.deepClone(item.system?.activation ?? {}),
+    uses: foundry.utils.deepClone(item.system?.uses ?? {}),
+    activities: summarizeActivitiesForCrGuess(item.system?.activities ?? {}, actorName),
+    attackBonus: item.system?.attack?.bonus ?? null,
+    save: foundry.utils.deepClone(item.system?.save ?? {}),
+    damage: foundry.utils.deepClone(item.system?.damage ?? {}),
+  };
+}
+
 function summarizeActivities(activities) {
   const summary = [];
 
@@ -829,6 +1022,29 @@ function summarizeActivities(activities) {
       type: activity?.type ?? null,
       suggestedUpdatePaths: getSuggestedActivityUpdatePaths(id),
       description: htmlToText(activity?.description ?? "").trim().slice(0, 2000),
+      activation: foundry.utils.deepClone(activity?.activation ?? {}),
+      attack: foundry.utils.deepClone(activity?.attack ?? {}),
+      damage: foundry.utils.deepClone(activity?.damage ?? {}),
+      save: foundry.utils.deepClone(activity?.save ?? {}),
+      range: foundry.utils.deepClone(activity?.range ?? {}),
+      target: foundry.utils.deepClone(activity?.target ?? {}),
+      uses: foundry.utils.deepClone(activity?.uses ?? {}),
+    });
+  }
+
+  return summary;
+}
+
+function summarizeActivitiesForCrGuess(activities, actorName) {
+  const summary = [];
+
+  for (const [, activity] of Object.entries(activities)) {
+    summary.push({
+      type: activity?.type ?? null,
+      description: redactMonsterIdentityInfo(
+        htmlToText(activity?.description ?? "").trim().slice(0, 2000),
+        actorName,
+      ),
       activation: foundry.utils.deepClone(activity?.activation ?? {}),
       attack: foundry.utils.deepClone(activity?.attack ?? {}),
       damage: foundry.utils.deepClone(activity?.damage ?? {}),
@@ -893,6 +1109,67 @@ function formatChallengeRating(value) {
   if (numeric === 0.25) return "1/4";
   if (numeric === 0.5) return "1/2";
   return `${numeric}`;
+}
+
+function normalizeCrGuessConfidence(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "low" || normalized === "medium" || normalized === "high") return normalized;
+  return "medium";
+}
+
+function redactMonsterIdentityInfo(text, actorName) {
+  let sanitized = String(text ?? "");
+
+  const trimmedName = String(actorName ?? "").trim();
+  if (trimmedName) {
+    const escapedName = escapeRegExp(trimmedName);
+    sanitized = sanitized.replace(new RegExp(escapedName, "gi"), "[REDACTED]");
+  }
+
+  sanitized = sanitized
+    .replace(/challenge\s*rating\s*[:]?\s*\d+(?:\s*\/\s*\d+)?/gi, "challenge rating [REDACTED]")
+    .replace(/\bcr\s*[:]?\s*\d+(?:\s*\/\s*\d+)?/gi, "CR [REDACTED]");
+
+  return sanitized;
+}
+
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function showCrGuessResultDialog(actor, result) {
+  const estimatedCr = formatChallengeRating(result.estimatedCr) || "?";
+  const currentCr = formatChallengeRating(actor.system?.details?.cr) || game.i18n.localize("Unknown");
+  const confidence = game.i18n.localize(`${MODULE_ID}.confidence.${result.confidence}`);
+  const rationale = foundry.utils.escapeHTML(result.rationale || game.i18n.localize(`${MODULE_ID}.guessCr.noRationale`));
+
+  ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.guessCrSuccess`, {
+    cr: estimatedCr,
+  }));
+
+  const dialog = new Dialog({
+    title: game.i18n.localize(`${MODULE_ID}.guessCrDialog.title`),
+    content: `
+      <div class="feature-creep-guess-cr-result">
+        <p>${game.i18n.format(`${MODULE_ID}.guessCrDialog.summary`, {
+          name: foundry.utils.escapeHTML(actor.name ?? ""),
+          estimatedCr,
+          confidence,
+          currentCr,
+        })}</p>
+        <p><strong>${game.i18n.localize(`${MODULE_ID}.guessCrDialog.rationaleLabel`)}</strong></p>
+        <p>${rationale}</p>
+      </div>
+    `,
+    buttons: {
+      ok: {
+        label: game.i18n.localize("OK"),
+      },
+    },
+    default: "ok",
+  });
+
+  dialog.render(true);
 }
 
 function normalizeForLookup(value) {
