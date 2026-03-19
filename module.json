@@ -2,7 +2,7 @@
   "id": "feature-creep",
   "title": "Feature Creep",
   "description": "Uses Anthropic AI to generate D&D5e item details, activities, effects, advancements, and Item Macro content from item descriptions.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "compatibility": {
     "minimum": "13",
     "verified": "13"
@@ -13,7 +13,7 @@
     }
   ],
   "manifest": "https://raw.githubusercontent.com/WanderWal/feature-creep/refs/heads/main/module.json",
-  "download": "https://github.com/WanderWal/feature-creep/archive/refs/tags/1.0.2.zip",
+  "download": "https://github.com/WanderWal/feature-creep/archive/refs/tags/1.0.3.zip",
   "esmodules": [
     "scripts/main.js"
   ],

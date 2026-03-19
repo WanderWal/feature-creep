@@ -894,10 +894,8 @@ function getMonsterCrGuessSnapshot(actor) {
     actor: {
       type: actor.type,
       size: system.traits?.size ?? null,
-      proficiencyBonus: system.attributes?.prof ?? null,
       ac: {
         value: system.attributes?.ac?.value ?? null,
-        flat: system.attributes?.ac?.flat ?? null,
         calc: system.attributes?.ac?.calc ?? null,
         formula: system.attributes?.ac?.formula ?? null,
       },
@@ -914,12 +912,7 @@ function getMonsterCrGuessSnapshot(actor) {
         conditionImmunities: foundry.utils.deepClone(system.traits?.ci ?? {}),
         languages: foundry.utils.deepClone(system.traits?.languages ?? {}),
       },
-      spellcasting: {
-        attack: system.attributes?.spell?.attack ?? null,
-        dc: system.attributes?.spell?.dc ?? null,
-        level: system.attributes?.spell?.level ?? null,
-      },
-      abilities: summarizeAbilities(system.abilities ?? {}),
+      abilities: summarizeAbilitiesForCrGuess(system.abilities ?? {}),
       biography: redactMonsterIdentityInfo(
         htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 4000),
         actor.name,
@@ -974,6 +967,19 @@ function summarizeAbilities(abilities) {
       mod: value?.mod ?? null,
       proficient: value?.proficient ?? null,
       save: value?.save ?? null,
+    };
+  }
+
+  return summary;
+}
+
+function summarizeAbilitiesForCrGuess(abilities) {
+  const summary = {};
+
+  for (const [key, value] of Object.entries(abilities)) {
+    summary[key] = {
+      value: value?.value ?? null,
+      mod: value?.mod ?? null,
     };
   }
 
