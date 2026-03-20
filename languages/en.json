@@ -50,8 +50,8 @@
   "feature-creep.confidence.high": "High",
   "feature-creep.lootDialog.title": "Generated Loot: {name}",
   "feature-creep.lootDialog.colName": "Name",
-  "feature-creep.lootDialog.colType": "Type",
   "feature-creep.lootDialog.colQty": "Qty",
+  "feature-creep.lootDialog.colWeight": "Weight",
   "feature-creep.lootDialog.colPrice": "Price",
   "feature-creep.lootDialog.noItems": "No loot items were generated.",
   "feature-creep.lootDialog.addToInventory": "Add to Inventory"

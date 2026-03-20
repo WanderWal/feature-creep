@@ -531,7 +531,7 @@ async function requestMonsterLoot({ actor, apiKey }) {
     "Return ONLY valid JSON, no markdown.",
     "The JSON object must contain these keys: loot (array), rationale (string).",
     "- loot: array of 3-6 items the creature might drop when defeated.",
-    "- Each loot item must have: name (string), type (one of: loot|weapon|equipment|consumable|tool), quantity (number >= 1), description (string), price (object with value (number) and denomination (one of: cp|sp|ep|gp|pp)).",
+    "- Each loot item must have: name (string), type (string, always material), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number) and denomination (one of: cp|sp|ep|gp|pp)).",
     "- Do NOT include any item whose name matches an item in the creature's existingInventory.",
     "- rationale: brief 1-2 sentence explanation of why these items fit this creature.",
     "Focus on items appropriate to the creature's nature, habitat, and CR.",
@@ -575,18 +575,21 @@ function getLootGenerationSnapshot(actor) {
 }
 
 function showLootGenerationDialog(actor, result) {
-  const VALID_TYPES = new Set(["loot", "weapon", "equipment", "consumable", "tool"]);
   const VALID_DENOMS = new Set(["cp", "sp", "ep", "gp", "pp"]);
+  const VALID_WEIGHT_UNITS = new Set(["lb", "kg"]);
+  const defaultWeightUnit = getDefaultWeightUnit();
 
   const sanitizedLoot = result.loot
     .filter((item) => item && typeof item === "object" && String(item.name || "").trim())
     .map((item) => ({
       name: String(item.name || "").trim().slice(0, 100),
-      type: VALID_TYPES.has(String(item.type || "").trim().toLowerCase())
-        ? String(item.type).trim().toLowerCase()
-        : "loot",
+      type: "material",
       quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
       description: String(item.description || "").trim().slice(0, 2000),
+      weightValue: Math.max(0, Number(item.weight?.value) || 0),
+      weightUnits: VALID_WEIGHT_UNITS.has(String(item.weight?.units || "").trim().toLowerCase())
+        ? String(item.weight.units).trim().toLowerCase()
+        : defaultWeightUnit,
       priceValue: Math.max(0, Number(item.price?.value) || 0),
       priceDenom: VALID_DENOMS.has(String(item.price?.denomination || "").trim().toLowerCase())
         ? String(item.price.denomination).trim().toLowerCase()
@@ -600,8 +603,8 @@ function showLootGenerationDialog(actor, result) {
       (item) => `
       <tr>
         <td>${foundry.utils.escapeHTML(item.name)}</td>
-        <td>${foundry.utils.escapeHTML(item.type)}</td>
         <td style="text-align:center">${item.quantity}</td>
+        <td style="text-align:right">${item.weightValue} ${foundry.utils.escapeHTML(item.weightUnits)}</td>
         <td style="text-align:right">${item.priceValue} ${foundry.utils.escapeHTML(item.priceDenom)}</td>
       </tr>`
     )
@@ -613,8 +616,8 @@ function showLootGenerationDialog(actor, result) {
         <thead>
           <tr>
             <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colName`)}</th>
-            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colType`)}</th>
             <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colQty`)}</th>
+            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colWeight`)}</th>
             <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colPrice`)}</th>
           </tr>
         </thead>
@@ -651,10 +654,17 @@ async function addLootToActorInventory(actor, lootItems) {
 
   const createData = lootItems.map((item) => ({
     name: item.name,
-    type: item.type,
+    type: "loot",
     system: {
+      type: {
+        value: "material",
+      },
       description: { value: item.description ? `<p>${item.description}</p>` : "" },
       quantity: item.quantity,
+      weight: {
+        value: item.weightValue,
+        units: item.weightUnits,
+      },
       price: {
         value: item.priceValue,
         denomination: item.priceDenom,
@@ -674,6 +684,19 @@ async function addLootToActorInventory(actor, lootItems) {
     count: lootItems.length,
     name: actor.name,
   }));
+}
+
+function getDefaultWeightUnit() {
+  const configuredUnits = CONFIG?.weightUnits;
+  if (configuredUnits && typeof configuredUnits === "object") {
+    if (Object.hasOwn(configuredUnits, "lb")) return "lb";
+    if (Object.hasOwn(configuredUnits, "kg")) return "kg";
+
+    const firstUnit = Object.keys(configuredUnits).find((key) => typeof key === "string" && key.trim());
+    if (firstUnit) return firstUnit;
+  }
+
+  return "lb";
 }
 
 async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
