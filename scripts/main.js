@@ -531,7 +531,7 @@ async function requestMonsterLoot({ actor, apiKey }) {
     "Return ONLY valid JSON, no markdown.",
     "The JSON object must contain these keys: loot (array), rationale (string).",
     "- loot: array of 3-6 items the creature might drop when defeated.",
-    "- Each loot item must have: name (string), type (string, always material), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number) and denomination (one of: cp|sp|ep|gp|pp)).",
+    "- Each loot item must have: name (string), type (one of: material|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number) and denomination (one of: cp|sp|ep|gp|pp)).",
     "- Do NOT include any item whose name matches an item in the creature's existingInventory.",
     "- rationale: brief 1-2 sentence explanation of why these items fit this creature.",
     "Focus on items appropriate to the creature's nature, habitat, and CR.",
@@ -575,6 +575,7 @@ function getLootGenerationSnapshot(actor) {
 }
 
 function showLootGenerationDialog(actor, result) {
+  const VALID_TYPES = new Set(["loot", "weapon", "equipment", "consumable", "tool"]);
   const VALID_DENOMS = new Set(["cp", "sp", "ep", "gp", "pp"]);
   const VALID_WEIGHT_UNITS = new Set(["lb", "kg"]);
   const defaultWeightUnit = getDefaultWeightUnit();
@@ -583,7 +584,9 @@ function showLootGenerationDialog(actor, result) {
     .filter((item) => item && typeof item === "object" && String(item.name || "").trim())
     .map((item) => ({
       name: String(item.name || "").trim().slice(0, 100),
-      type: "material",
+      type: VALID_TYPES.has(String(item.type || "").trim().toLowerCase())
+        ? String(item.type).trim().toLowerCase()
+        : "loot",
       quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
       description: String(item.description || "").trim().slice(0, 2000),
       weightValue: Math.max(0, Number(item.weight?.value) || 0),
@@ -603,6 +606,7 @@ function showLootGenerationDialog(actor, result) {
       (item) => `
       <tr>
         <td>${foundry.utils.escapeHTML(item.name)}</td>
+        <td>${foundry.utils.escapeHTML(item.type)}</td>
         <td style="text-align:center">${item.quantity}</td>
         <td style="text-align:right">${item.weightValue} ${foundry.utils.escapeHTML(item.weightUnits)}</td>
         <td style="text-align:right">${item.priceValue} ${foundry.utils.escapeHTML(item.priceDenom)}</td>
@@ -616,6 +620,7 @@ function showLootGenerationDialog(actor, result) {
         <thead>
           <tr>
             <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colName`)}</th>
+            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colType`)}</th>
             <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colQty`)}</th>
             <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colWeight`)}</th>
             <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colPrice`)}</th>
@@ -654,11 +659,8 @@ async function addLootToActorInventory(actor, lootItems) {
 
   const createData = lootItems.map((item) => ({
     name: item.name,
-    type: "loot",
+    type: item.type,
     system: {
-      type: {
-        value: "material",
-      },
       description: { value: item.description ? `<p>${item.description}</p>` : "" },
       quantity: item.quantity,
       weight: {
