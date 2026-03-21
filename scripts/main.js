@@ -75,6 +75,7 @@ Hooks.on("getActorSheetHeaderButtons", (sheet, buttons) => {
   injectLegacyActorHeaderButton(sheet, buttons);
   injectLegacyActorGuessButton(sheet, buttons);
   injectLegacyActorLootButton(sheet, buttons);
+  injectLegacyActorCraftButton(sheet, buttons);
 });
 
 Hooks.on("getHeaderControlsItemSheet5e2", (sheet, buttons) => {
@@ -85,6 +86,7 @@ Hooks.on("getHeaderControlsActorSheet5e2", (sheet, buttons) => {
   injectV2ActorHeaderControl(sheet, buttons);
   injectV2ActorGuessControl(sheet, buttons);
   injectV2ActorLootControl(sheet, buttons);
+  injectV2ActorCraftControl(sheet, buttons);
 });
 
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
@@ -92,6 +94,7 @@ Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   injectV2ActorHeaderControl(app, controls);
   injectV2ActorGuessControl(app, controls);
   injectV2ActorLootControl(app, controls);
+  injectV2ActorCraftControl(app, controls);
 });
 
 function injectLegacyHeaderButton(sheet, buttons) {
@@ -274,6 +277,51 @@ function injectV2ActorLootControl(app, controls) {
   });
 }
 
+function injectLegacyActorCraftButton(sheet, buttons) {
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eCraftingActorSheet(sheet)) return;
+  if (getActorArtisanTools(sheet.document).length === 0) return;
+
+  const existingButton = buttons.find((button) => button?.class === "feature-creep-craft-button");
+  if (existingButton) return;
+
+  buttons.unshift({
+    class: "feature-creep-craft-button",
+    icon: "fas fa-hammer",
+    label: game.i18n.localize(`${MODULE_ID}.button.craft`),
+    onclick: async () => {
+      const actor = sheet.document;
+      if (!actor) return;
+      await generateCraftedItemsForActor(actor);
+    },
+  });
+}
+
+function injectV2ActorCraftControl(app, controls) {
+  if (!Array.isArray(controls)) return;
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eCraftingActorSheet(app)) return;
+  if (getActorArtisanTools(app.document).length === 0) return;
+
+  const existingControl = controls.find((control) => control?.action === "feature-creep-craft-items");
+  if (existingControl) return;
+
+  controls.unshift({
+    action: "feature-creep-craft-items",
+    class: "feature-creep-craft-button",
+    icon: "fas fa-hammer",
+    label: game.i18n.localize(`${MODULE_ID}.button.craft`),
+    visible: true,
+    onClick: async () => {
+      const actor = app?.document;
+      if (!actor) return;
+      await generateCraftedItemsForActor(actor);
+    },
+  });
+}
+
 function canUseModule() {
   return game.user?.isGM;
 }
@@ -288,6 +336,13 @@ function isDnd5eNpcSheet(sheet) {
   const actor = sheet?.document;
   if (!actor) return false;
   return game.system?.id === "dnd5e" && actor.documentName === "Actor" && actor.type === "npc";
+}
+
+function isDnd5eCraftingActorSheet(sheet) {
+  const actor = sheet?.document;
+  if (!actor) return false;
+  if (game.system?.id !== "dnd5e" || actor.documentName !== "Actor") return false;
+  return actor.type === "character" || actor.type === "npc";
 }
 
 async function confirmRun() {
@@ -491,6 +546,147 @@ async function guessMonsterCr(actor) {
   }
 }
 
+async function generateCraftedItemsForActor(actor) {
+  try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
+    const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
+    if (!apiKey) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
+      return;
+    }
+
+    const selection = await promptForCraftingSelection(actor);
+    if (!selection) return;
+
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingCraft`, {
+      tool: selection.artisanTool.name,
+    }));
+
+    const result = await requestCraftedItems({
+      actor,
+      artisanTool: selection.artisanTool,
+      ingredientItems: selection.ingredientItems,
+      notes: selection.notes,
+      apiKey,
+    });
+
+    showCraftedItemsDialog(actor, selection.artisanTool, selection.ingredientItems, result);
+  } catch (error) {
+    console.error(`${MODULE_ID} | craft generation failed`, error);
+
+    const message = String(error?.message || "");
+    const isCorsError = error instanceof TypeError && /fetch|failed|cors|network/i.test(message);
+    if (isCorsError) {
+      ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.corsBlocked`));
+      return;
+    }
+
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.craftFailed`));
+  }
+}
+
+async function promptForCraftingSelection(actor) {
+  const artisanTools = getActorArtisanTools(actor);
+  if (artisanTools.length === 0) {
+    ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.noArtisanTools`));
+    return null;
+  }
+
+  const ingredientItems = getActorCraftingIngredientItems(actor);
+  if (ingredientItems.length === 0) {
+    ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.noCraftingItems`));
+    return null;
+  }
+
+  const toolOptions = artisanTools.map((tool) => `
+    <option value="${tool.id}">${foundry.utils.escapeHTML(tool.name)}</option>
+  `).join("");
+
+  const ingredientOptions = ingredientItems.map((item) => `
+    <label class="feature-creep-crafting-item">
+      <input type="checkbox" name="ingredientIds" value="${item.id}" />
+      <span>${foundry.utils.escapeHTML(formatCraftingIngredientLabel(item))}</span>
+    </label>
+  `).join("");
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const dialog = new Dialog({
+      title: game.i18n.localize(`${MODULE_ID}.craftDialog.title`),
+      content: `
+        <form class="feature-creep-crafting-form">
+          <p>${game.i18n.localize(`${MODULE_ID}.craftDialog.content`)}</p>
+          <div class="form-group">
+            <label for="feature-creep-crafting-tool">${game.i18n.localize(`${MODULE_ID}.craftDialog.toolLabel`)}</label>
+            <select id="feature-creep-crafting-tool" name="artisanToolId">${toolOptions}</select>
+          </div>
+          <div class="form-group stacked">
+            <label>${game.i18n.localize(`${MODULE_ID}.craftDialog.ingredientsLabel`)}</label>
+            <div class="feature-creep-crafting-items">${ingredientOptions}</div>
+          </div>
+          <div class="form-group stacked">
+            <label for="feature-creep-crafting-notes">${game.i18n.localize(`${MODULE_ID}.craftDialog.notesLabel`)}</label>
+            <textarea id="feature-creep-crafting-notes" name="craftNotes" rows="3" placeholder="${foundry.utils.escapeHTML(game.i18n.localize(`${MODULE_ID}.craftDialog.notesPlaceholder`))}"></textarea>
+          </div>
+        </form>
+      `,
+      buttons: {
+        cancel: {
+          label: game.i18n.localize("Cancel"),
+          callback: () => finish(null),
+        },
+        submit: {
+          label: game.i18n.localize(`${MODULE_ID}.craftDialog.submit`),
+          callback: (html) => {
+            const root = html?.[0];
+            const artisanToolId = String(root?.querySelector("[name='artisanToolId']")?.value || "").trim();
+            const notes = String(root?.querySelector("[name='craftNotes']")?.value || "").trim().slice(0, 1200);
+            const ingredientIds = Array.from(root?.querySelectorAll("[name='ingredientIds']:checked") ?? [])
+              .map((input) => String(input.value || "").trim())
+              .filter(Boolean);
+
+            const artisanTool = actor.items.get(artisanToolId);
+            if (!artisanTool || !isArtisanTool(artisanTool)) {
+              ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.invalidCraftTool`));
+              finish(null);
+              return;
+            }
+
+            const selectedItems = ingredientIds
+              .map((id) => actor.items.get(id))
+              .filter((item) => item);
+
+            if (selectedItems.length === 0) {
+              ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.selectCraftItems`));
+              finish(null);
+              return;
+            }
+
+            finish({ artisanTool, ingredientItems: selectedItems, notes });
+          },
+        },
+      },
+      default: "submit",
+      close: () => finish(null),
+      render: (html) => {
+        html?.[0]?.querySelector("[name='artisanToolId']")?.focus();
+      },
+    });
+
+    dialog.render(true);
+  });
+}
+
 async function generateLootForActor(actor) {
   try {
     if (!canUseModule()) {
@@ -523,6 +719,67 @@ async function generateLootForActor(actor) {
 
     ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.lootFailed`));
   }
+}
+
+async function requestCraftedItems({ actor, artisanTool, ingredientItems, notes, apiKey }) {
+  const systemPrompt = [
+    "You are a D&D5e (2024) crafting assistant for Foundry VTT.",
+    "Return ONLY valid JSON, no markdown.",
+    "The JSON object must contain these keys: items (array), rationale (string).",
+    "- items: array of 1-4 crafted output items.",
+    "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
+    "- The output items must plausibly be crafted using the selected artisan tool and the provided ingredient items.",
+    "- Prefer transforming, refining, combining, or improving the provided ingredients rather than inventing unrelated treasure.",
+    "- If the ingredients are not enough for a complete finished good, return sensible intermediate goods, components, or materials instead.",
+    "- Do not include the artisan tool itself as an output item.",
+    "- Do not merely copy ingredient items unchanged unless a processed or improved version is justified.",
+    "- rationale: brief 1-3 sentence explanation of how the selected tool and ingredients support the crafted output.",
+    "Do not include commentary outside the JSON.",
+  ].join("\n");
+
+  const userPrompt = [
+    "Generate crafted output items based on this actor, selected artisan tool, and selected ingredient items.",
+    "Crafting snapshot:",
+    JSON.stringify(getCraftingGenerationSnapshot(actor, artisanTool, ingredientItems, notes), null, 2),
+  ].join("\n\n");
+
+  const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  const items = Array.isArray(parsed.items) ? parsed.items : [];
+  const rationale = String(parsed.rationale ?? "").trim().slice(0, 1200);
+
+  return { items, rationale };
+}
+
+function getCraftingGenerationSnapshot(actor, artisanTool, ingredientItems, notes) {
+  const system = actor.system ?? {};
+
+  return {
+    actor: {
+      name: actor.name,
+      type: actor.type,
+      biography: htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 1500),
+    },
+    artisanTool: summarizeCraftingItem(artisanTool),
+    ingredientItems: ingredientItems.map((item) => summarizeCraftingItem(item)),
+    notes: String(notes || "").trim() || null,
+  };
+}
+
+function summarizeCraftingItem(item) {
+  return {
+    name: item.name,
+    type: item.type,
+    itemSubtype: item.system?.type?.value ?? null,
+    quantity: item.system?.quantity ?? null,
+    description: htmlToText(item.system?.description?.value ?? "").trim().slice(0, 1200),
+    weight: foundry.utils.deepClone(item.system?.weight ?? {}),
+    price: foundry.utils.deepClone(item.system?.price ?? {}),
+  };
 }
 
 async function requestMonsterLoot({ actor, apiKey }) {
@@ -575,18 +832,112 @@ function getLootGenerationSnapshot(actor) {
 }
 
 function showLootGenerationDialog(actor, result) {
-  const VALID_TYPES = new Set(["loot", "weapon", "equipment", "consumable", "tool"]);
+  const sanitizedLoot = sanitizeGeneratedInventoryItems(result.loot);
+
+  const rationale = foundry.utils.escapeHTML(result.rationale || "");
+
+  const tableHtml = buildGeneratedItemTable(sanitizedLoot, `${MODULE_ID}.lootDialog.noItems`);
+  const buttons = {
+    close: {
+      label: game.i18n.localize("Close"),
+    },
+  };
+
+  if (sanitizedLoot.length > 0) {
+    buttons.add = {
+      label: game.i18n.localize(`${MODULE_ID}.lootDialog.addToInventory`),
+      callback: () => addLootToActorInventory(actor, sanitizedLoot),
+    };
+  }
+
+  const dialog = new Dialog({
+    title: game.i18n.format(`${MODULE_ID}.lootDialog.title`, {
+      name: foundry.utils.escapeHTML(actor.name ?? ""),
+    }),
+    content: `
+      <div class="feature-creep-loot-result">
+        ${tableHtml}
+        ${rationale ? `<p class="feature-creep-loot-rationale"><em>${rationale}</em></p>` : ""}
+      </div>`,
+    buttons,
+    default: sanitizedLoot.length > 0 ? "add" : "close",
+  });
+
+  dialog.render(true);
+}
+
+function showCraftedItemsDialog(actor, artisanTool, ingredientItems, result) {
+  const craftedItems = sanitizeGeneratedInventoryItems(result.items);
+  const rationale = foundry.utils.escapeHTML(result.rationale || "");
+  const ingredientNames = ingredientItems.map((item) => foundry.utils.escapeHTML(item.name)).join(", ");
+  const tableHtml = buildGeneratedItemTable(craftedItems, `${MODULE_ID}.craftDialog.noItems`);
+
+  const buttons = {
+    close: {
+      label: game.i18n.localize("Close"),
+    },
+  };
+
+  if (craftedItems.length > 0) {
+    buttons.add = {
+      label: game.i18n.localize(`${MODULE_ID}.craftDialog.addToInventory`),
+      callback: () => addCraftedItemsToActorInventory(actor, craftedItems),
+    };
+  }
+
+  const dialog = new Dialog({
+    title: game.i18n.format(`${MODULE_ID}.craftDialog.resultsTitle`, {
+      name: foundry.utils.escapeHTML(actor.name ?? ""),
+    }),
+    content: `
+      <div class="feature-creep-generated-result">
+        <p class="feature-creep-generated-summary">${game.i18n.format(`${MODULE_ID}.craftDialog.summary`, {
+          tool: foundry.utils.escapeHTML(artisanTool.name ?? ""),
+          count: ingredientItems.length,
+        })}</p>
+        <p class="feature-creep-generated-inputs"><strong>${game.i18n.localize(`${MODULE_ID}.craftDialog.ingredientsLabel`)}</strong>: ${ingredientNames}</p>
+        ${tableHtml}
+        ${rationale ? `<p class="feature-creep-loot-rationale"><em>${rationale}</em></p>` : ""}
+      </div>
+    `,
+    buttons,
+    default: craftedItems.length > 0 ? "add" : "close",
+  });
+
+  dialog.render(true);
+}
+
+async function addLootToActorInventory(actor, lootItems) {
+  await addGeneratedItemsToActorInventory(actor, lootItems, "generatedLoot", `${MODULE_ID}.notifications.lootAdded`);
+}
+
+async function addCraftedItemsToActorInventory(actor, craftedItems) {
+  await addGeneratedItemsToActorInventory(actor, craftedItems, "generatedCraft", `${MODULE_ID}.notifications.craftAdded`);
+}
+
+function getDefaultWeightUnit() {
+  const configuredUnits = CONFIG?.weightUnits;
+  if (configuredUnits && typeof configuredUnits === "object") {
+    if (Object.hasOwn(configuredUnits, "lb")) return "lb";
+    if (Object.hasOwn(configuredUnits, "kg")) return "kg";
+
+    const firstUnit = Object.keys(configuredUnits).find((key) => typeof key === "string" && key.trim());
+    if (firstUnit) return firstUnit;
+  }
+
+  return "lb";
+}
+
+function sanitizeGeneratedInventoryItems(items) {
   const VALID_DENOMS = new Set(["cp", "sp", "ep", "gp", "pp"]);
   const VALID_WEIGHT_UNITS = new Set(["lb", "kg"]);
   const defaultWeightUnit = getDefaultWeightUnit();
 
-  const sanitizedLoot = result.loot
+  return (Array.isArray(items) ? items : [])
     .filter((item) => item && typeof item === "object" && String(item.name || "").trim())
     .map((item) => ({
       name: String(item.name || "").trim().slice(0, 100),
-      type: VALID_TYPES.has(String(item.type || "").trim().toLowerCase())
-        ? String(item.type).trim().toLowerCase()
-        : "loot",
+      type: normalizeGeneratedItemType(item.type),
       quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
       description: String(item.description || "").trim().slice(0, 2000),
       weightValue: Math.max(0, Number(item.weight?.value) || 0),
@@ -598,10 +949,21 @@ function showLootGenerationDialog(actor, result) {
         ? String(item.price.denomination).trim().toLowerCase()
         : "gp",
     }));
+}
 
-  const rationale = foundry.utils.escapeHTML(result.rationale || "");
+function normalizeGeneratedItemType(value) {
+  const normalized = normalizeForLookup(value);
+  if (["loot", "weapon", "equipment", "consumable", "tool"].includes(normalized)) return normalized;
+  if (normalized === "material" || normalized === "treasure") return "loot";
+  return "loot";
+}
 
-  const rowsHtml = sanitizedLoot
+function buildGeneratedItemTable(items, emptyLabelKey) {
+  if (!items.length) {
+    return `<p>${game.i18n.localize(emptyLabelKey)}</p>`;
+  }
+
+  const rowsHtml = items
     .map(
       (item) => `
       <tr>
@@ -614,50 +976,26 @@ function showLootGenerationDialog(actor, result) {
     )
     .join("");
 
-  const tableHtml = sanitizedLoot.length
-    ? `
-      <table class="feature-creep-loot-table">
-        <thead>
-          <tr>
-            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colName`)}</th>
-            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colType`)}</th>
-            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colQty`)}</th>
-            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colWeight`)}</th>
-            <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colPrice`)}</th>
-          </tr>
-        </thead>
-        <tbody>${rowsHtml}</tbody>
-      </table>`
-    : `<p>${game.i18n.localize(`${MODULE_ID}.lootDialog.noItems`)}</p>`;
-
-  const dialog = new Dialog({
-    title: game.i18n.format(`${MODULE_ID}.lootDialog.title`, {
-      name: foundry.utils.escapeHTML(actor.name ?? ""),
-    }),
-    content: `
-      <div class="feature-creep-loot-result">
-        ${tableHtml}
-        ${rationale ? `<p class="feature-creep-loot-rationale"><em>${rationale}</em></p>` : ""}
-      </div>`,
-    buttons: {
-      add: {
-        label: game.i18n.localize(`${MODULE_ID}.lootDialog.addToInventory`),
-        callback: () => addLootToActorInventory(actor, sanitizedLoot),
-      },
-      close: {
-        label: game.i18n.localize("Close"),
-      },
-    },
-    default: "add",
-  });
-
-  dialog.render(true);
+  return `
+    <table class="feature-creep-loot-table">
+      <thead>
+        <tr>
+          <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colName`)}</th>
+          <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colType`)}</th>
+          <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colQty`)}</th>
+          <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colWeight`)}</th>
+          <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colPrice`)}</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
 }
 
-async function addLootToActorInventory(actor, lootItems) {
-  if (!lootItems.length) return;
+async function addGeneratedItemsToActorInventory(actor, items, flagKey, notificationKey) {
+  if (!items.length) return;
 
-  const createData = lootItems.map((item) => ({
+  const generatedAt = Date.now();
+  const createData = items.map((item) => ({
     name: item.name,
     type: item.type,
     system: {
@@ -674,31 +1012,42 @@ async function addLootToActorInventory(actor, lootItems) {
     },
     flags: {
       [MODULE_ID]: {
-        generatedLoot: true,
-        generatedAt: Date.now(),
+        [flagKey]: true,
+        generatedAt,
       },
     },
   }));
 
   await actor.createEmbeddedDocuments("Item", createData);
 
-  ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.lootAdded`, {
-    count: lootItems.length,
+  ui.notifications.info(game.i18n.format(notificationKey, {
+    count: items.length,
     name: actor.name,
   }));
 }
 
-function getDefaultWeightUnit() {
-  const configuredUnits = CONFIG?.weightUnits;
-  if (configuredUnits && typeof configuredUnits === "object") {
-    if (Object.hasOwn(configuredUnits, "lb")) return "lb";
-    if (Object.hasOwn(configuredUnits, "kg")) return "kg";
+function isArtisanTool(item) {
+  return item?.type === "tool" && normalizeForLookup(item.system?.type?.value) === "art";
+}
 
-    const firstUnit = Object.keys(configuredUnits).find((key) => typeof key === "string" && key.trim());
-    if (firstUnit) return firstUnit;
-  }
+function getActorArtisanTools(actor) {
+  return actor.items
+    .filter((item) => isArtisanTool(item))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
 
-  return "lb";
+function getActorCraftingIngredientItems(actor) {
+  const supportedTypes = new Set(["material", "weapon", "equipment", "consumable", "tool"]);
+
+  return actor.items
+    .filter((item) => supportedTypes.has(item.type) && !isArtisanTool(item))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function formatCraftingIngredientLabel(item) {
+  const quantity = Number(item.system?.quantity) || 1;
+  const quantityLabel = quantity > 1 ? `${quantity}x ` : "";
+  return `${quantityLabel}${item.name} (${item.type})`;
 }
 
 async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
