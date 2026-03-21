@@ -48,6 +48,11 @@
   gap: 0.5rem;
 }
 
+.feature-creep-crafting-item .feature-creep-resource-qty {
+  width: 4.5rem;
+  margin-left: auto;
+}
+
 .feature-creep-crafting-form .stacked {
   display: block;
 }

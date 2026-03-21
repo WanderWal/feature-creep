@@ -569,12 +569,12 @@ async function generateCraftedItemsForActor(actor) {
     const result = await requestCraftedItems({
       actor,
       artisanTool: selection.artisanTool,
-      ingredientItems: selection.ingredientItems,
+      ingredientResources: selection.ingredientResources,
       notes: selection.notes,
       apiKey,
     });
 
-    showCraftedItemsDialog(actor, selection.artisanTool, selection.ingredientItems, result);
+    showCraftedItemsDialog(actor, selection.artisanTool, selection.ingredientResources, result);
   } catch (error) {
     console.error(`${MODULE_ID} | craft generation failed`, error);
 
@@ -610,6 +610,15 @@ async function promptForCraftingSelection(actor) {
     <label class="feature-creep-crafting-item">
       <input type="checkbox" name="ingredientIds" value="${item.id}" />
       <span>${foundry.utils.escapeHTML(formatCraftingIngredientLabel(item))}</span>
+      <input
+        class="feature-creep-resource-qty"
+        type="number"
+        data-item-id="${item.id}"
+        min="1"
+        max="${getItemAvailableQuantity(item)}"
+        value="1"
+        aria-label="${foundry.utils.escapeHTML(game.i18n.localize(`${MODULE_ID}.craftDialog.resourceQtyLabel`))}"
+      />
     </label>
   `).join("");
 
@@ -672,7 +681,21 @@ async function promptForCraftingSelection(actor) {
               return;
             }
 
-            finish({ artisanTool, ingredientItems: selectedItems, notes });
+            const quantityById = new Map(
+              Array.from(root?.querySelectorAll(".feature-creep-resource-qty") ?? []).map((input) => [
+                String(input?.dataset?.itemId || "").trim(),
+                Number(input?.value ?? 1),
+              ])
+            );
+
+            const ingredientResources = selectedItems.map((item) => {
+              const available = getItemAvailableQuantity(item);
+              const requested = Number(quantityById.get(item.id) ?? 1);
+              const quantity = Math.max(1, Math.min(available, Math.round(requested || 1)));
+              return { item, quantity, available };
+            });
+
+            finish({ artisanTool, ingredientResources, notes });
           },
         },
       },
@@ -721,26 +744,28 @@ async function generateLootForActor(actor) {
   }
 }
 
-async function requestCraftedItems({ actor, artisanTool, ingredientItems, notes, apiKey }) {
+async function requestCraftedItems({ actor, artisanTool, ingredientResources, notes, apiKey }) {
   const systemPrompt = [
-    "You are a D&D5e (2024) crafting assistant for Foundry VTT.",
+    "You are a D&D5e (2024) crafting assistant for Foundry VTT used by a DM to build a crafting system.",
     "Return ONLY valid JSON, no markdown.",
     "The JSON object must contain these keys: items (array), rationale (string).",
     "- items: array of 1-4 crafted output items.",
-    "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
-    "- The output items must plausibly be crafted using the selected tool and the provided ingredient items.",
+    "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), craftingDc (number), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
+    "- The output items must plausibly be crafted using the selected tool and the provided ingredient resources with quantities.",
     "- Prefer transforming, refining, combining, or improving the provided ingredients rather than inventing unrelated treasure.",
     "- If the ingredients are not enough for a complete finished good, return sensible intermediate goods, components, or materials instead.",
     "- Do not include the selected tool itself as an output item.",
     "- Do not merely copy ingredient items unchanged unless a processed or improved version is justified.",
+    "- craftingDc must be a practical tool check DC in the 5-30 range and should scale with complexity and resource quality.",
+    "- Take the selected tool check profile into account. If the tool check is strong, use lower or moderate DCs; if weak, use higher DCs for complex outputs.",
     "- rationale: brief 1-3 sentence explanation of how the selected tool and ingredients support the crafted output.",
     "Do not include commentary outside the JSON.",
   ].join("\n");
 
   const userPrompt = [
-    "Generate crafted output items based on this actor, selected tool, and selected ingredient items.",
+    "Generate crafted output items based on this actor, selected tool, selected ingredient resources, and tool check profile.",
     "Crafting snapshot:",
-    JSON.stringify(getCraftingGenerationSnapshot(actor, artisanTool, ingredientItems, notes), null, 2),
+    JSON.stringify(getCraftingGenerationSnapshot(actor, artisanTool, ingredientResources, notes), null, 2),
   ].join("\n\n");
 
   const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
@@ -755,7 +780,7 @@ async function requestCraftedItems({ actor, artisanTool, ingredientItems, notes,
   return { items, rationale };
 }
 
-function getCraftingGenerationSnapshot(actor, artisanTool, ingredientItems, notes) {
+function getCraftingGenerationSnapshot(actor, artisanTool, ingredientResources, notes) {
   const system = actor.system ?? {};
 
   return {
@@ -765,8 +790,26 @@ function getCraftingGenerationSnapshot(actor, artisanTool, ingredientItems, note
       biography: htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 1500),
     },
     tool: summarizeCraftingItem(artisanTool),
-    ingredientItems: ingredientItems.map((item) => summarizeCraftingItem(item)),
+    toolCheck: getToolCheckProfile(actor, artisanTool),
+    ingredientResources: ingredientResources.map((resource) => ({
+      selectedQuantity: resource.quantity,
+      availableQuantity: resource.available,
+      item: summarizeCraftingItem(resource.item),
+    })),
     notes: String(notes || "").trim() || null,
+  };
+}
+
+function getToolCheckProfile(actor, toolItem) {
+  const toolKey = String(toolItem?.system?.type?.baseItem || "").trim();
+  const toolData = toolKey ? actor.system?.tools?.[toolKey] ?? null : null;
+  const total = Number(toolData?.total);
+
+  return {
+    key: toolKey || null,
+    ability: toolData?.ability ?? null,
+    proficiency: toolData?.value ?? null,
+    total: Number.isFinite(total) ? total : null,
   };
 }
 
@@ -866,11 +909,15 @@ function showLootGenerationDialog(actor, result) {
   dialog.render(true);
 }
 
-function showCraftedItemsDialog(actor, artisanTool, ingredientItems, result) {
-  const craftedItems = sanitizeGeneratedInventoryItems(result.items);
+function showCraftedItemsDialog(actor, artisanTool, ingredientResources, result) {
+  const craftedItems = sanitizeGeneratedInventoryItems(result.items, { includeCraftingDc: true });
   const rationale = foundry.utils.escapeHTML(result.rationale || "");
-  const ingredientNames = ingredientItems.map((item) => foundry.utils.escapeHTML(item.name)).join(", ");
-  const tableHtml = buildGeneratedItemTable(craftedItems, `${MODULE_ID}.craftDialog.noItems`);
+  const ingredientNames = ingredientResources
+    .map((resource) => `${resource.quantity}x ${foundry.utils.escapeHTML(resource.item.name)}`)
+    .join(", ");
+  const tableHtml = buildGeneratedItemTable(craftedItems, `${MODULE_ID}.craftDialog.noItems`, {
+    showCraftingDc: true,
+  });
 
   const buttons = {
     close: {
@@ -881,7 +928,7 @@ function showCraftedItemsDialog(actor, artisanTool, ingredientItems, result) {
   if (craftedItems.length > 0) {
     buttons.add = {
       label: game.i18n.localize(`${MODULE_ID}.craftDialog.addToInventory`),
-      callback: () => addCraftedItemsToActorInventory(actor, craftedItems),
+      callback: () => addCraftedItemsToActorInventory(actor, craftedItems, ingredientResources),
     };
   }
 
@@ -893,7 +940,7 @@ function showCraftedItemsDialog(actor, artisanTool, ingredientItems, result) {
       <div class="feature-creep-generated-result">
         <p class="feature-creep-generated-summary">${game.i18n.format(`${MODULE_ID}.craftDialog.summary`, {
           tool: foundry.utils.escapeHTML(artisanTool.name ?? ""),
-          count: ingredientItems.length,
+          count: ingredientResources.length,
         })}</p>
         <p class="feature-creep-generated-inputs"><strong>${game.i18n.localize(`${MODULE_ID}.craftDialog.ingredientsLabel`)}</strong>: ${ingredientNames}</p>
         ${tableHtml}
@@ -911,8 +958,92 @@ async function addLootToActorInventory(actor, lootItems) {
   await addGeneratedItemsToActorInventory(actor, lootItems, "generatedLoot", `${MODULE_ID}.notifications.lootAdded`);
 }
 
-async function addCraftedItemsToActorInventory(actor, craftedItems) {
+async function addCraftedItemsToActorInventory(actor, craftedItems, ingredientResources) {
+  const consumption = await consumeCraftingResources(actor, ingredientResources);
+  if (!consumption.success) return;
+
   await addGeneratedItemsToActorInventory(actor, craftedItems, "generatedCraft", `${MODULE_ID}.notifications.craftAdded`);
+
+  ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.craftConsumed`, {
+    name: actor.name,
+    count: consumption.resourceCount,
+    quantity: consumption.totalQuantity,
+  }));
+}
+
+async function consumeCraftingResources(actor, ingredientResources) {
+  const resources = Array.isArray(ingredientResources) ? ingredientResources : [];
+  if (resources.length === 0) {
+    return { success: true, resourceCount: 0, totalQuantity: 0 };
+  }
+
+  const missing = [];
+  const insufficient = [];
+  const resolved = [];
+
+  for (const resource of resources) {
+    const itemId = String(resource?.item?.id || "").trim();
+    if (!itemId) continue;
+
+    const actorItem = actor.items.get(itemId);
+    const label = resource?.item?.name || actorItem?.name || "Unknown Item";
+    const required = Math.max(1, Math.round(Number(resource?.quantity) || 1));
+
+    if (!actorItem) {
+      missing.push(label);
+      continue;
+    }
+
+    const available = getRawItemQuantity(actorItem);
+    if (available < required) {
+      insufficient.push(`${label} (${required}/${available})`);
+      continue;
+    }
+
+    resolved.push({ item: actorItem, required, available });
+  }
+
+  if (missing.length > 0) {
+    ui.notifications.warn(game.i18n.format(`${MODULE_ID}.notifications.craftResourceMissing`, {
+      items: missing.join(", "),
+    }));
+    return { success: false, resourceCount: 0, totalQuantity: 0 };
+  }
+
+  if (insufficient.length > 0) {
+    ui.notifications.warn(game.i18n.format(`${MODULE_ID}.notifications.craftInsufficientResources`, {
+      items: insufficient.join(", "),
+    }));
+    return { success: false, resourceCount: 0, totalQuantity: 0 };
+  }
+
+  const updates = [];
+  const deletions = [];
+  let totalQuantity = 0;
+
+  for (const entry of resolved) {
+    totalQuantity += entry.required;
+    const remaining = entry.available - entry.required;
+    if (remaining <= 0) {
+      deletions.push(entry.item.id);
+    } else {
+      updates.push({ _id: entry.item.id, "system.quantity": remaining });
+    }
+  }
+
+  if (updates.length > 0) {
+    await actor.updateEmbeddedDocuments("Item", updates);
+  }
+
+  if (deletions.length > 0) {
+    await actor.deleteEmbeddedDocuments("Item", deletions);
+  }
+
+  return {
+    success: true,
+    resourceCount: resolved.length,
+    totalQuantity,
+  };
 }
 
 function getDefaultWeightUnit() {
@@ -928,27 +1059,36 @@ function getDefaultWeightUnit() {
   return "lb";
 }
 
-function sanitizeGeneratedInventoryItems(items) {
+function sanitizeGeneratedInventoryItems(items, options = {}) {
   const VALID_DENOMS = new Set(["cp", "sp", "ep", "gp", "pp"]);
   const VALID_WEIGHT_UNITS = new Set(["lb", "kg"]);
   const defaultWeightUnit = getDefaultWeightUnit();
+  const includeCraftingDc = options.includeCraftingDc === true;
 
   return (Array.isArray(items) ? items : [])
     .filter((item) => item && typeof item === "object" && String(item.name || "").trim())
-    .map((item) => ({
-      name: String(item.name || "").trim().slice(0, 100),
-      type: normalizeGeneratedItemType(item.type),
-      quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
-      description: String(item.description || "").trim().slice(0, 2000),
-      weightValue: Math.max(0, Number(item.weight?.value) || 0),
-      weightUnits: VALID_WEIGHT_UNITS.has(String(item.weight?.units || "").trim().toLowerCase())
-        ? String(item.weight.units).trim().toLowerCase()
-        : defaultWeightUnit,
-      priceValue: Math.max(0, Number(item.price?.value) || 0),
-      priceDenom: VALID_DENOMS.has(String(item.price?.denomination || "").trim().toLowerCase())
-        ? String(item.price.denomination).trim().toLowerCase()
-        : "gp",
-    }));
+    .map((item) => {
+      const normalized = {
+        name: String(item.name || "").trim().slice(0, 100),
+        type: normalizeGeneratedItemType(item.type),
+        quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
+        description: String(item.description || "").trim().slice(0, 2000),
+        weightValue: Math.max(0, Number(item.weight?.value) || 0),
+        weightUnits: VALID_WEIGHT_UNITS.has(String(item.weight?.units || "").trim().toLowerCase())
+          ? String(item.weight.units).trim().toLowerCase()
+          : defaultWeightUnit,
+        priceValue: Math.max(0, Number(item.price?.value) || 0),
+        priceDenom: VALID_DENOMS.has(String(item.price?.denomination || "").trim().toLowerCase())
+          ? String(item.price.denomination).trim().toLowerCase()
+          : "gp",
+      };
+
+      if (includeCraftingDc) {
+        normalized.craftingDc = Math.max(5, Math.min(30, Math.round(Number(item.craftingDc) || 10)));
+      }
+
+      return normalized;
+    });
 }
 
 function normalizeGeneratedItemType(value) {
@@ -958,7 +1098,9 @@ function normalizeGeneratedItemType(value) {
   return "loot";
 }
 
-function buildGeneratedItemTable(items, emptyLabelKey) {
+function buildGeneratedItemTable(items, emptyLabelKey, options = {}) {
+  const showCraftingDc = options.showCraftingDc === true;
+
   if (!items.length) {
     return `<p>${game.i18n.localize(emptyLabelKey)}</p>`;
   }
@@ -970,6 +1112,7 @@ function buildGeneratedItemTable(items, emptyLabelKey) {
         <td>${foundry.utils.escapeHTML(item.name)}</td>
         <td>${foundry.utils.escapeHTML(item.type)}</td>
         <td style="text-align:center">${item.quantity}</td>
+        ${showCraftingDc ? `<td style="text-align:right">${item.craftingDc ?? "-"}</td>` : ""}
         <td style="text-align:right">${item.weightValue} ${foundry.utils.escapeHTML(item.weightUnits)}</td>
         <td style="text-align:right">${item.priceValue} ${foundry.utils.escapeHTML(item.priceDenom)}</td>
       </tr>`
@@ -983,6 +1126,7 @@ function buildGeneratedItemTable(items, emptyLabelKey) {
           <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colName`)}</th>
           <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colType`)}</th>
           <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colQty`)}</th>
+          ${showCraftingDc ? `<th>${game.i18n.localize(`${MODULE_ID}.craftDialog.colDc`)}</th>` : ""}
           <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colWeight`)}</th>
           <th>${game.i18n.localize(`${MODULE_ID}.lootDialog.colPrice`)}</th>
         </tr>
@@ -999,7 +1143,13 @@ async function addGeneratedItemsToActorInventory(actor, items, flagKey, notifica
     name: item.name,
     type: item.type,
     system: {
-      description: { value: item.description ? `<p>${item.description}</p>` : "" },
+      description: {
+        value: item.description
+          ? `<p>${item.description}</p>${Number.isFinite(Number(item.craftingDc)) ? `<p><strong>${game.i18n.localize(`${MODULE_ID}.craftDialog.colDc`)}:</strong> ${Math.round(Number(item.craftingDc))}</p>` : ""}`
+          : Number.isFinite(Number(item.craftingDc))
+            ? `<p><strong>${game.i18n.localize(`${MODULE_ID}.craftDialog.colDc`)}:</strong> ${Math.round(Number(item.craftingDc))}</p>`
+            : "",
+      },
       quantity: item.quantity,
       weight: {
         value: item.weightValue,
@@ -1014,6 +1164,7 @@ async function addGeneratedItemsToActorInventory(actor, items, flagKey, notifica
       [MODULE_ID]: {
         [flagKey]: true,
         generatedAt,
+        ...(Number.isFinite(Number(item.craftingDc)) ? { craftingDc: Math.round(Number(item.craftingDc)) } : {}),
       },
     },
   }));
@@ -1045,9 +1196,20 @@ function getActorCraftingIngredientItems(actor) {
 }
 
 function formatCraftingIngredientLabel(item) {
-  const quantity = Number(item.system?.quantity) || 1;
-  const quantityLabel = quantity > 1 ? `${quantity}x ` : "";
-  return `${quantityLabel}${item.name} (${item.type})`;
+  const available = getItemAvailableQuantity(item);
+  return `${item.name} (${item.type}, ${game.i18n.localize(`${MODULE_ID}.craftDialog.availableLabel`)}: ${available})`;
+}
+
+function getItemAvailableQuantity(item) {
+  const raw = getRawItemQuantity(item);
+  if (raw <= 0) return 1;
+  return raw;
+}
+
+function getRawItemQuantity(item) {
+  const value = Number(item?.system?.quantity);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.max(0, Math.floor(value));
 }
 
 async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
