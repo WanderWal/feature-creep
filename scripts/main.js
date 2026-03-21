@@ -928,7 +928,7 @@ function showCraftedItemsDialog(actor, artisanTool, ingredientResources, result)
   if (craftedItems.length > 0) {
     buttons.add = {
       label: game.i18n.localize(`${MODULE_ID}.craftDialog.addToInventory`),
-      callback: () => addCraftedItemsToActorInventory(actor, craftedItems, ingredientResources),
+      callback: () => addCraftedItemsToActorInventory(actor, craftedItems),
     };
   }
 
@@ -958,92 +958,8 @@ async function addLootToActorInventory(actor, lootItems) {
   await addGeneratedItemsToActorInventory(actor, lootItems, "generatedLoot", `${MODULE_ID}.notifications.lootAdded`);
 }
 
-async function addCraftedItemsToActorInventory(actor, craftedItems, ingredientResources) {
-  const consumption = await consumeCraftingResources(actor, ingredientResources);
-  if (!consumption.success) return;
-
+async function addCraftedItemsToActorInventory(actor, craftedItems) {
   await addGeneratedItemsToActorInventory(actor, craftedItems, "generatedCraft", `${MODULE_ID}.notifications.craftAdded`);
-
-  ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.craftConsumed`, {
-    name: actor.name,
-    count: consumption.resourceCount,
-    quantity: consumption.totalQuantity,
-  }));
-}
-
-async function consumeCraftingResources(actor, ingredientResources) {
-  const resources = Array.isArray(ingredientResources) ? ingredientResources : [];
-  if (resources.length === 0) {
-    return { success: true, resourceCount: 0, totalQuantity: 0 };
-  }
-
-  const missing = [];
-  const insufficient = [];
-  const resolved = [];
-
-  for (const resource of resources) {
-    const itemId = String(resource?.item?.id || "").trim();
-    if (!itemId) continue;
-
-    const actorItem = actor.items.get(itemId);
-    const label = resource?.item?.name || actorItem?.name || "Unknown Item";
-    const required = Math.max(1, Math.round(Number(resource?.quantity) || 1));
-
-    if (!actorItem) {
-      missing.push(label);
-      continue;
-    }
-
-    const available = getRawItemQuantity(actorItem);
-    if (available < required) {
-      insufficient.push(`${label} (${required}/${available})`);
-      continue;
-    }
-
-    resolved.push({ item: actorItem, required, available });
-  }
-
-  if (missing.length > 0) {
-    ui.notifications.warn(game.i18n.format(`${MODULE_ID}.notifications.craftResourceMissing`, {
-      items: missing.join(", "),
-    }));
-    return { success: false, resourceCount: 0, totalQuantity: 0 };
-  }
-
-  if (insufficient.length > 0) {
-    ui.notifications.warn(game.i18n.format(`${MODULE_ID}.notifications.craftInsufficientResources`, {
-      items: insufficient.join(", "),
-    }));
-    return { success: false, resourceCount: 0, totalQuantity: 0 };
-  }
-
-  const updates = [];
-  const deletions = [];
-  let totalQuantity = 0;
-
-  for (const entry of resolved) {
-    totalQuantity += entry.required;
-    const remaining = entry.available - entry.required;
-    if (remaining <= 0) {
-      deletions.push(entry.item.id);
-    } else {
-      updates.push({ _id: entry.item.id, "system.quantity": remaining });
-    }
-  }
-
-  if (updates.length > 0) {
-    await actor.updateEmbeddedDocuments("Item", updates);
-  }
-
-  if (deletions.length > 0) {
-    await actor.deleteEmbeddedDocuments("Item", deletions);
-  }
-
-  return {
-    success: true,
-    resourceCount: resolved.length,
-    totalQuantity,
-  };
 }
 
 function getDefaultWeightUnit() {
@@ -1201,15 +1117,9 @@ function formatCraftingIngredientLabel(item) {
 }
 
 function getItemAvailableQuantity(item) {
-  const raw = getRawItemQuantity(item);
-  if (raw <= 0) return 1;
-  return raw;
-}
-
-function getRawItemQuantity(item) {
   const value = Number(item?.system?.quantity);
-  if (!Number.isFinite(value) || value <= 0) return 0;
-  return Math.max(0, Math.floor(value));
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  return Math.max(1, Math.floor(value));
 }
 
 async function requestAnthropicGeneration({ item, descriptionText, apiKey }) {
