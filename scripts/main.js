@@ -281,7 +281,7 @@ function injectLegacyActorCraftButton(sheet, buttons) {
   if (!game.settings.get(MODULE_ID, "enabled")) return;
   if (!canUseModule()) return;
   if (!isDnd5eCraftingActorSheet(sheet)) return;
-  if (getActorArtisanTools(sheet.document).length === 0) return;
+  if (getActorCraftingTools(sheet.document).length === 0) return;
 
   const existingButton = buttons.find((button) => button?.class === "feature-creep-craft-button");
   if (existingButton) return;
@@ -303,7 +303,7 @@ function injectV2ActorCraftControl(app, controls) {
   if (!game.settings.get(MODULE_ID, "enabled")) return;
   if (!canUseModule()) return;
   if (!isDnd5eCraftingActorSheet(app)) return;
-  if (getActorArtisanTools(app.document).length === 0) return;
+  if (getActorCraftingTools(app.document).length === 0) return;
 
   const existingControl = controls.find((control) => control?.action === "feature-creep-craft-items");
   if (existingControl) return;
@@ -590,9 +590,9 @@ async function generateCraftedItemsForActor(actor) {
 }
 
 async function promptForCraftingSelection(actor) {
-  const artisanTools = getActorArtisanTools(actor);
-  if (artisanTools.length === 0) {
-    ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.noArtisanTools`));
+  const availableTools = getActorCraftingTools(actor);
+  if (availableTools.length === 0) {
+    ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.noCraftingTools`));
     return null;
   }
 
@@ -602,7 +602,7 @@ async function promptForCraftingSelection(actor) {
     return null;
   }
 
-  const toolOptions = artisanTools.map((tool) => `
+  const toolOptions = availableTools.map((tool) => `
     <option value="${tool.id}">${foundry.utils.escapeHTML(tool.name)}</option>
   `).join("");
 
@@ -656,7 +656,7 @@ async function promptForCraftingSelection(actor) {
               .filter(Boolean);
 
             const artisanTool = actor.items.get(artisanToolId);
-            if (!artisanTool || !isArtisanTool(artisanTool)) {
+            if (!artisanTool || !isCraftingTool(artisanTool)) {
               ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.invalidCraftTool`));
               finish(null);
               return;
@@ -664,7 +664,7 @@ async function promptForCraftingSelection(actor) {
 
             const selectedItems = ingredientIds
               .map((id) => actor.items.get(id))
-              .filter((item) => item);
+              .filter((item) => item && item.id !== artisanToolId);
 
             if (selectedItems.length === 0) {
               ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.selectCraftItems`));
@@ -728,17 +728,17 @@ async function requestCraftedItems({ actor, artisanTool, ingredientItems, notes,
     "The JSON object must contain these keys: items (array), rationale (string).",
     "- items: array of 1-4 crafted output items.",
     "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
-    "- The output items must plausibly be crafted using the selected artisan tool and the provided ingredient items.",
+    "- The output items must plausibly be crafted using the selected tool and the provided ingredient items.",
     "- Prefer transforming, refining, combining, or improving the provided ingredients rather than inventing unrelated treasure.",
     "- If the ingredients are not enough for a complete finished good, return sensible intermediate goods, components, or materials instead.",
-    "- Do not include the artisan tool itself as an output item.",
+    "- Do not include the selected tool itself as an output item.",
     "- Do not merely copy ingredient items unchanged unless a processed or improved version is justified.",
     "- rationale: brief 1-3 sentence explanation of how the selected tool and ingredients support the crafted output.",
     "Do not include commentary outside the JSON.",
   ].join("\n");
 
   const userPrompt = [
-    "Generate crafted output items based on this actor, selected artisan tool, and selected ingredient items.",
+    "Generate crafted output items based on this actor, selected tool, and selected ingredient items.",
     "Crafting snapshot:",
     JSON.stringify(getCraftingGenerationSnapshot(actor, artisanTool, ingredientItems, notes), null, 2),
   ].join("\n\n");
@@ -764,7 +764,7 @@ function getCraftingGenerationSnapshot(actor, artisanTool, ingredientItems, note
       type: actor.type,
       biography: htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 1500),
     },
-    artisanTool: summarizeCraftingItem(artisanTool),
+    tool: summarizeCraftingItem(artisanTool),
     ingredientItems: ingredientItems.map((item) => summarizeCraftingItem(item)),
     notes: String(notes || "").trim() || null,
   };
@@ -1026,21 +1026,21 @@ async function addGeneratedItemsToActorInventory(actor, items, flagKey, notifica
   }));
 }
 
-function isArtisanTool(item) {
-  return item?.type === "tool" && normalizeForLookup(item.system?.type?.value) === "art";
+function isCraftingTool(item) {
+  return item?.type === "tool";
 }
 
-function getActorArtisanTools(actor) {
+function getActorCraftingTools(actor) {
   return actor.items
-    .filter((item) => isArtisanTool(item))
+    .filter((item) => isCraftingTool(item))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function getActorCraftingIngredientItems(actor) {
-  const supportedTypes = new Set(["material", "weapon", "equipment", "consumable", "tool"]);
+  const supportedTypes = new Set(["loot", "weapon", "equipment", "consumable", "tool"]);
 
   return actor.items
-    .filter((item) => supportedTypes.has(item.type) && !isArtisanTool(item))
+    .filter((item) => supportedTypes.has(item.type))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
