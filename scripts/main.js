@@ -745,6 +745,8 @@ async function generateLootForActor(actor) {
 }
 
 async function requestCraftedItems({ actor, artisanTool, ingredientResources, notes, apiKey }) {
+  const recipeIntegrationActive = isBeaversCraftingIntegrationAvailable();
+
   const systemPrompt = [
     "You are a D&D5e (2024) crafting assistant for Foundry VTT used by a DM to build a crafting system.",
     "Return ONLY valid JSON, no markdown.",
@@ -758,9 +760,12 @@ async function requestCraftedItems({ actor, artisanTool, ingredientResources, no
     "- Do not merely copy ingredient items unchanged unless a processed or improved version is justified.",
     "- craftingDc must be a practical tool check DC in the 5-30 range and should scale with complexity and resource quality.",
     "- Take the selected tool check profile into account. If the tool check is strong, use lower or moderate DCs; if weak, use higher DCs for complex outputs.",
+    recipeIntegrationActive
+      ? "- These outputs will be turned into Beavers Crafting recipes by a DM tool, so each item should be a clear craft result with a meaningful, playable craftingDc and coherent required resources."
+      : "",
     "- rationale: brief 1-3 sentence explanation of how the selected tool and ingredients support the crafted output.",
     "Do not include commentary outside the JSON.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   const userPrompt = [
     "Generate crafted output items based on this actor, selected tool, selected ingredient resources, and tool check profile.",
@@ -930,6 +935,13 @@ function showCraftedItemsDialog(actor, artisanTool, ingredientResources, result)
       label: game.i18n.localize(`${MODULE_ID}.craftDialog.addToInventory`),
       callback: () => addCraftedItemsToActorInventory(actor, craftedItems),
     };
+
+    if (isBeaversCraftingIntegrationAvailable()) {
+      buttons.recipe = {
+        label: game.i18n.localize(`${MODULE_ID}.craftDialog.createRecipes`),
+        callback: () => createBeaversRecipesFromCrafting(actor, artisanTool, ingredientResources, craftedItems, result),
+      };
+    }
   }
 
   const dialog = new Dialog({
@@ -952,6 +964,191 @@ function showCraftedItemsDialog(actor, artisanTool, ingredientResources, result)
   });
 
   dialog.render(true);
+}
+
+async function createBeaversRecipesFromCrafting(actor, toolItem, ingredientResources, craftedItems, result) {
+  try {
+    if (!isBeaversCraftingIntegrationAvailable()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.recipeIntegrationMissing`));
+      return;
+    }
+
+    ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.creatingRecipes`));
+
+    const outputTemplateItems = await createCraftingOutputTemplateItems(craftedItems);
+    const toolUuid = await resolveToolUuidForBeaversTest(toolItem);
+    const recipeItems = [];
+
+    for (let index = 0; index < craftedItems.length; index++) {
+      const crafted = craftedItems[index];
+      const outputItem = outputTemplateItems[index];
+      if (!outputItem) continue;
+
+      const recipeData = await buildBeaversRecipeItemData({
+        toolItem,
+        toolUuid,
+        ingredientResources,
+        craftedItem: crafted,
+        outputItem,
+        rationale: String(result?.rationale || "").trim(),
+      });
+
+      const recipeItem = await Item.create(recipeData);
+      if (recipeItem) recipeItems.push(recipeItem);
+    }
+
+    if (recipeItems.length === 0) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.recipeCreateNone`));
+      return;
+    }
+
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.recipeCreated`, {
+      count: recipeItems.length,
+    }));
+  } catch (error) {
+    console.error(`${MODULE_ID} | beavers recipe creation failed`, error);
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.recipeCreateFailed`));
+  }
+}
+
+function isBeaversCraftingIntegrationAvailable() {
+  const testClasses = globalThis.beaversSystemInterface?.testClasses;
+
+  return Boolean(
+    game.modules?.get("beavers-crafting")?.active
+    && game.modules?.get("beavers-system-interface")?.active
+    && game.modules?.get("bsa-dnd5e")?.active
+    && globalThis.beaversSystemInterface
+    && testClasses?.ToolTest
+  );
+}
+
+async function createCraftingOutputTemplateItems(craftedItems) {
+  const createData = craftedItems.map((item) => ({
+    name: item.name,
+    type: item.type,
+    system: {
+      description: {
+        value: item.description
+          ? `<p>${item.description}</p><p><strong>Craft DC:</strong> ${item.craftingDc}</p>`
+          : `<p><strong>Craft DC:</strong> ${item.craftingDc}</p>`,
+      },
+      quantity: item.quantity,
+      weight: {
+        value: item.weightValue,
+        units: item.weightUnits,
+      },
+      price: {
+        value: item.priceValue,
+        denomination: item.priceDenom,
+      },
+    },
+    flags: {
+      [MODULE_ID]: {
+        generatedCraftTemplate: true,
+        craftingDc: item.craftingDc,
+        generatedAt: Date.now(),
+      },
+    },
+  }));
+
+  return Item.create(createData);
+}
+
+async function buildBeaversRecipeItemData({ toolItem, toolUuid, ingredientResources, craftedItem, outputItem, rationale }) {
+  const bsi = globalThis.beaversSystemInterface;
+  const recipeItemType = bsi?.configLootItemType || "loot";
+  const outputComponent = bsi.componentFromEntity(outputItem);
+  outputComponent.quantity = craftedItem.quantity;
+
+  const inputComponents = ingredientResources.map((resource) => {
+    const component = bsi.componentFromEntity(resource.item);
+    component.quantity = resource.quantity;
+    return component;
+  });
+
+  const inputGroup = {};
+  for (const component of inputComponents) {
+    inputGroup[foundry.utils.randomID()] = component;
+  }
+
+  const instruction = [
+    `Generated by ${MODULE_ID} for DM recipe authoring.`,
+    `Tool: ${toolItem.name}`,
+    `Craft DC: ${craftedItem.craftingDc}`,
+    rationale ? `Notes: ${rationale}` : "",
+  ].filter(Boolean).join("\n");
+
+  return {
+    name: `${craftedItem.name} (${game.i18n.localize(`${MODULE_ID}.craftDialog.recipeSuffix`)})`,
+    type: recipeItemType,
+    img: outputItem.img,
+    flags: {
+      "beavers-crafting": {
+        subtype: "Recipe",
+        recipe: {
+          required: {},
+          input: {
+            1: inputGroup,
+          },
+          output: {
+            1: {
+              [foundry.utils.randomID()]: outputComponent,
+            },
+          },
+          instruction,
+          beaversTests: {
+            fails: 1,
+            consume: true,
+            ands: {
+              1: {
+                hits: 1,
+                ors: {
+                  1: {
+                    type: "ToolTest",
+                    data: {
+                      tool: toolUuid,
+                      dc: craftedItem.craftingDc,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      [MODULE_ID]: {
+        generatedRecipe: true,
+        generatedAt: Date.now(),
+      },
+    },
+  };
+}
+
+async function resolveToolUuidForBeaversTest(toolItem) {
+  const fallback = toolItem?.uuid;
+  const bsaActive = game.modules?.get("bsa-dnd5e")?.active;
+  if (!bsaActive) return fallback;
+
+  const configured = game.settings?.get("bsa-dnd5e", "toolConfig");
+  if (!Array.isArray(configured) || configured.length === 0) return fallback;
+
+  const targetName = normalizeForLookup(toolItem?.name);
+  if (!targetName) return fallback;
+
+  for (const uuid of configured) {
+    try {
+      const doc = await fromUuid(uuid);
+      if (!doc) continue;
+      if (normalizeForLookup(doc.name) === targetName) {
+        return uuid;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return fallback;
 }
 
 async function addLootToActorInventory(actor, lootItems) {
