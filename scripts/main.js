@@ -78,6 +78,10 @@ Hooks.on("getActorSheetHeaderButtons", (sheet, buttons) => {
   injectLegacyActorCraftButton(sheet, buttons);
 });
 
+Hooks.on("getJournalSheetHeaderButtons", (sheet, buttons) => {
+  injectLegacyJournalItemsButton(sheet, buttons);
+});
+
 Hooks.on("getHeaderControlsItemSheet5e2", (sheet, buttons) => {
   injectV2HeaderControl(sheet, buttons);
 });
@@ -95,6 +99,7 @@ Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   injectV2ActorGuessControl(app, controls);
   injectV2ActorLootControl(app, controls);
   injectV2ActorCraftControl(app, controls);
+  injectV2JournalItemsControl(app, controls);
 });
 
 function injectLegacyHeaderButton(sheet, buttons) {
@@ -322,6 +327,49 @@ function injectV2ActorCraftControl(app, controls) {
   });
 }
 
+function injectLegacyJournalItemsButton(sheet, buttons) {
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isJournalSheet(sheet)) return;
+
+  const existingButton = buttons.find((button) => button?.class === "feature-creep-journal-items-button");
+  if (existingButton) return;
+
+  buttons.unshift({
+    class: "feature-creep-journal-items-button",
+    icon: "fas fa-book-open",
+    label: game.i18n.localize(`${MODULE_ID}.button.generateJournalItems`),
+    onclick: async () => {
+      const source = sheet.document;
+      if (!source) return;
+      await generateItemsFromJournal(source);
+    },
+  });
+}
+
+function injectV2JournalItemsControl(app, controls) {
+  if (!Array.isArray(controls)) return;
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isJournalSheet(app)) return;
+
+  const existingControl = controls.find((control) => control?.action === "feature-creep-generate-journal-items");
+  if (existingControl) return;
+
+  controls.unshift({
+    action: "feature-creep-generate-journal-items",
+    class: "feature-creep-journal-items-button",
+    icon: "fas fa-book-open",
+    label: game.i18n.localize(`${MODULE_ID}.button.generateJournalItems`),
+    visible: true,
+    onClick: async () => {
+      const source = app?.document;
+      if (!source) return;
+      await generateItemsFromJournal(source);
+    },
+  });
+}
+
 function canUseModule() {
   return game.user?.isGM;
 }
@@ -343,6 +391,12 @@ function isDnd5eCraftingActorSheet(sheet) {
   if (!actor) return false;
   if (game.system?.id !== "dnd5e" || actor.documentName !== "Actor") return false;
   return actor.type === "character" || actor.type === "npc";
+}
+
+function isJournalSheet(sheet) {
+  const document = sheet?.document;
+  if (!document) return false;
+  return document.documentName === "JournalEntry" || document.documentName === "JournalEntryPage";
 }
 
 async function confirmRun() {
@@ -744,6 +798,46 @@ async function generateLootForActor(actor) {
   }
 }
 
+async function generateItemsFromJournal(sourceDocument) {
+  try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
+    const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
+    if (!apiKey) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
+      return;
+    }
+
+    const snapshot = getJournalGenerationSnapshot(sourceDocument);
+    if (!snapshot) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.noJournalContent`));
+      return;
+    }
+
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingJournalItems`, {
+      name: snapshot.name,
+    }));
+
+    const result = await requestJournalItems({ snapshot, apiKey });
+
+    showJournalItemsDialog(sourceDocument, result);
+  } catch (error) {
+    console.error(`${MODULE_ID} | journal item generation failed`, error);
+
+    const message = String(error?.message || "");
+    const isCorsError = error instanceof TypeError && /fetch|failed|cors|network/i.test(message);
+    if (isCorsError) {
+      ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.corsBlocked`));
+      return;
+    }
+
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.journalItemsFailed`));
+  }
+}
+
 async function requestCraftedItems({ actor, artisanTool, ingredientResources, notes, apiKey }) {
   const recipeIntegrationActive = isBeaversCraftingIntegrationAvailable();
 
@@ -863,6 +957,93 @@ async function requestMonsterLoot({ actor, apiKey }) {
   return { loot, rationale };
 }
 
+async function requestJournalItems({ snapshot, apiKey }) {
+  const systemPrompt = [
+    "You are a D&D5e (2024) Dungeon Master assistant helping generate location-based items from journal notes.",
+    "Return ONLY valid JSON, no markdown.",
+    "The JSON object must contain these keys: items (array), rationale (string).",
+    "- items: array of 3-8 items inspired by the journal's location and details.",
+    "- Each item must have: name (string), type (one of: material|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
+    "- Items should be practical, discoverable, gathered or craftable in/near this location (loot, supplies, clues, relics, tools, etc).",
+    "- Avoid overpowered legendary items unless the journal clearly supports it.",
+    "- rationale: brief 1-3 sentence explanation of why these items fit this journal.",
+    "Do not include commentary outside the JSON.",
+  ].join("\n");
+
+  const userPrompt = [
+    "Generate location-based D&D5e items from this journal snapshot:",
+    JSON.stringify(snapshot, null, 2),
+  ].join("\n\n");
+
+  const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  const items = Array.isArray(parsed.items) ? parsed.items : [];
+  const rationale = String(parsed.rationale ?? "").trim().slice(0, 1200);
+
+  return { items, rationale };
+}
+
+function getJournalGenerationSnapshot(sourceDocument) {
+  const journal = resolveJournalEntry(sourceDocument);
+  if (!journal) return null;
+
+  const pages = [];
+
+  if (sourceDocument?.documentName === "JournalEntryPage") {
+    const pageSnapshot = summarizeJournalPage(sourceDocument);
+    if (pageSnapshot) pages.push(pageSnapshot);
+  } else {
+    for (const page of journal.pages ?? []) {
+      const pageSnapshot = summarizeJournalPage(page);
+      if (pageSnapshot) pages.push(pageSnapshot);
+    }
+  }
+
+  if (pages.length === 0) return null;
+
+  const combinedText = pages.map((page) => page.text).join("\n\n").trim();
+  if (!combinedText) return null;
+
+  return {
+    name: journal.name,
+    folder: journal.folder?.name ?? null,
+    pageCount: pages.length,
+    pages,
+    combinedText: combinedText.slice(0, 8000),
+  };
+}
+
+function summarizeJournalPage(page) {
+  const textType = String(page?.type || "").trim().toLowerCase();
+  if (textType && textType !== "text") return null;
+
+  const raw = String(page?.text?.content ?? page?.text?.markdown ?? "").trim();
+  if (!raw) return null;
+
+  const normalizedText = /<[^>]+>/.test(raw) ? htmlToText(raw) : raw;
+  const trimmed = String(normalizedText || "").trim();
+  if (!trimmed) return null;
+
+  return {
+    name: String(page?.name || "Page").trim().slice(0, 160),
+    text: trimmed.slice(0, 2500),
+  };
+}
+
+function resolveJournalEntry(sourceDocument) {
+  if (!sourceDocument) return null;
+  if (sourceDocument.documentName === "JournalEntry") return sourceDocument;
+  if (sourceDocument.documentName === "JournalEntryPage") {
+    return sourceDocument.parent ?? sourceDocument.journal ?? null;
+  }
+
+  return null;
+}
+
 function getLootGenerationSnapshot(actor) {
   const system = actor.system ?? {};
 
@@ -913,6 +1094,81 @@ function showLootGenerationDialog(actor, result) {
   });
 
   dialog.render(true);
+}
+
+function showJournalItemsDialog(sourceDocument, result) {
+  const journal = resolveJournalEntry(sourceDocument);
+  if (!journal) return;
+
+  const sanitizedItems = sanitizeGeneratedInventoryItems(result.items);
+  const rationale = foundry.utils.escapeHTML(result.rationale || "");
+
+  const tableHtml = buildGeneratedItemTable(sanitizedItems, `${MODULE_ID}.journalDialog.noItems`);
+  const buttons = {
+    close: {
+      label: game.i18n.localize("Close"),
+    },
+  };
+
+  if (sanitizedItems.length > 0) {
+    buttons.create = {
+      label: game.i18n.localize(`${MODULE_ID}.journalDialog.createItems`),
+      callback: () => createWorldItemsFromJournal(journal, sanitizedItems),
+    };
+  }
+
+  const dialog = new Dialog({
+    title: game.i18n.format(`${MODULE_ID}.journalDialog.title`, {
+      name: foundry.utils.escapeHTML(journal.name ?? ""),
+    }),
+    content: `
+      <div class="feature-creep-loot-result">
+        ${tableHtml}
+        ${rationale ? `<p class="feature-creep-loot-rationale"><em>${rationale}</em></p>` : ""}
+      </div>`,
+    buttons,
+    default: sanitizedItems.length > 0 ? "create" : "close",
+  });
+
+  dialog.render(true);
+}
+
+async function createWorldItemsFromJournal(journal, items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+
+  const generatedAt = Date.now();
+  const createData = items.map((item) => ({
+    name: item.name,
+    type: item.type,
+    system: {
+      description: {
+        value: item.description ? `<p>${item.description}</p>` : "",
+      },
+      quantity: item.quantity,
+      weight: {
+        value: item.weightValue,
+        units: item.weightUnits,
+      },
+      price: {
+        value: item.priceValue,
+        denomination: item.priceDenom,
+      },
+    },
+    flags: {
+      [MODULE_ID]: {
+        generatedJournalItem: true,
+        generatedAt,
+        sourceJournalUuid: journal.uuid,
+      },
+    },
+  }));
+
+  await Item.create(createData);
+
+  ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.journalItemsCreated`, {
+    count: items.length,
+    name: journal.name,
+  }));
 }
 
 function showCraftedItemsDialog(actor, artisanTool, ingredientResources, result) {
