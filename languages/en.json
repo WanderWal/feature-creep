@@ -92,5 +92,10 @@
   "feature-creep.lootDialog.addToInventory": "Add to Inventory",
   "feature-creep.journalDialog.title": "Generated Items from Journal: {name}",
   "feature-creep.journalDialog.noItems": "No items were generated from this journal.",
-  "feature-creep.journalDialog.createItems": "Create World Items"
+  "feature-creep.journalDialog.createItems": "Create World Items",
+  "feature-creep.journalDialog.actorPromptTitle": "Journal Item Context",
+  "feature-creep.journalDialog.actorPromptContent": "Select which actor is searching this location to tailor generated items to their sheet data.",
+  "feature-creep.journalDialog.actorLabel": "Searching Actor",
+  "feature-creep.journalDialog.actorNone": "No actor context",
+  "feature-creep.journalDialog.actorSubmit": "Generate Items"
 }

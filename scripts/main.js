@@ -817,11 +817,16 @@ async function generateItemsFromJournal(sourceDocument) {
       return;
     }
 
+    const selectedActor = await promptForJournalActorSelection();
+    if (selectedActor === null) return;
+
+    const actorSnapshot = selectedActor ? summarizeActorForJournalItems(selectedActor) : null;
+
     ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingJournalItems`, {
       name: snapshot.name,
     }));
 
-    const result = await requestJournalItems({ snapshot, apiKey });
+    const result = await requestJournalItems({ snapshot, actorSnapshot, apiKey });
 
     showJournalItemsDialog(sourceDocument, result);
   } catch (error) {
@@ -838,6 +843,105 @@ async function generateItemsFromJournal(sourceDocument) {
   }
 }
 
+async function promptForJournalActorSelection() {
+  const actors = getJournalCandidateActors();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const actorOptions = [
+      `<option value="">${foundry.utils.escapeHTML(game.i18n.localize(`${MODULE_ID}.journalDialog.actorNone`))}</option>`,
+      ...actors.map((actor) => `<option value="${actor.id}">${foundry.utils.escapeHTML(actor.name)}</option>`),
+    ].join("");
+
+    const dialog = new Dialog({
+      title: game.i18n.localize(`${MODULE_ID}.journalDialog.actorPromptTitle`),
+      content: `
+        <form class="feature-creep-journal-actor-form">
+          <p>${game.i18n.localize(`${MODULE_ID}.journalDialog.actorPromptContent`)}</p>
+          <div class="form-group">
+            <label for="feature-creep-journal-actor">${game.i18n.localize(`${MODULE_ID}.journalDialog.actorLabel`)}</label>
+            <select id="feature-creep-journal-actor" name="journalActorId">${actorOptions}</select>
+          </div>
+        </form>
+      `,
+      buttons: {
+        cancel: {
+          label: game.i18n.localize("Cancel"),
+          callback: () => finish(null),
+        },
+        submit: {
+          label: game.i18n.localize(`${MODULE_ID}.journalDialog.actorSubmit`),
+          callback: (html) => {
+            const root = html?.[0];
+            const actorId = String(root?.querySelector("[name='journalActorId']")?.value || "").trim();
+            if (!actorId) {
+              finish(undefined);
+              return;
+            }
+
+            const actor = game.actors?.get(actorId) ?? null;
+            finish(actor || undefined);
+          },
+        },
+      },
+      default: "submit",
+      close: () => finish(null),
+      render: (html) => {
+        html?.[0]?.querySelector("[name='journalActorId']")?.focus();
+      },
+    });
+
+    dialog.render(true);
+  });
+}
+
+function getJournalCandidateActors() {
+  return Array.from(game.actors ?? [])
+    .filter((actor) => actor?.type === "character" || actor?.type === "npc")
+    .sort((left, right) => String(left.name || "").localeCompare(String(right.name || "")));
+}
+
+function summarizeActorForJournalItems(actor) {
+  const system = actor.system ?? {};
+  const classes = actor.items
+    .filter((item) => item?.type === "class")
+    .map((item) => ({
+      name: item.name,
+      level: item.system?.levels ?? null,
+      subclass: item.system?.subclass?.name ?? null,
+    }));
+
+  return {
+    name: actor.name,
+    type: actor.type,
+    level: system.details?.level ?? null,
+    race: system.details?.race ?? null,
+    classes,
+    abilities: summarizeAbilitiesForCrGuess(system.abilities ?? {}),
+    proficiencies: {
+      skills: foundry.utils.deepClone(system.skills ?? {}),
+      tools: foundry.utils.deepClone(system.tools ?? {}),
+      weapons: foundry.utils.deepClone(system.traits?.weaponProf ?? {}),
+      armor: foundry.utils.deepClone(system.traits?.armorProf ?? {}),
+      languages: foundry.utils.deepClone(system.traits?.languages ?? {}),
+    },
+    inventory: actor.items
+      .filter((item) => ["weapon", "equipment", "consumable", "tool", "loot", "container"].includes(item.type))
+      .map((item) => ({
+        name: item.name,
+        type: item.type,
+        quantity: item.system?.quantity ?? null,
+      }))
+      .slice(0, 80),
+  };
+}
+
 async function requestCraftedItems({ actor, artisanTool, ingredientResources, notes, apiKey }) {
   const recipeIntegrationActive = isBeaversCraftingIntegrationAvailable();
 
@@ -846,7 +950,7 @@ async function requestCraftedItems({ actor, artisanTool, ingredientResources, no
     "Return ONLY valid JSON, no markdown.",
     "The JSON object must contain these keys: items (array), rationale (string).",
     "- items: array of 1-4 crafted output items.",
-    "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), craftingDc (number), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
+    "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|container|treasure), quantity (number >= 1), craftingDc (number), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
     "- The output items must plausibly be crafted using the selected tool and the provided ingredient resources with quantities.",
     "- Prefer transforming, refining, combining, or improving the provided ingredients rather than inventing unrelated treasure.",
     "- If the ingredients are not enough for a complete finished good, return sensible intermediate goods, components, or materials instead.",
@@ -957,14 +1061,15 @@ async function requestMonsterLoot({ actor, apiKey }) {
   return { loot, rationale };
 }
 
-async function requestJournalItems({ snapshot, apiKey }) {
+async function requestJournalItems({ snapshot, actorSnapshot, apiKey }) {
   const systemPrompt = [
     "You are a D&D5e (2024) Dungeon Master assistant helping generate location-based items from journal notes.",
     "Return ONLY valid JSON, no markdown.",
     "The JSON object must contain these keys: items (array), rationale (string).",
     "- items: array of 3-8 items inspired by the journal's location and details.",
     "- Each item must have: name (string), type (one of: material|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
-    "- Items should be practical, discoverable, gathered or craftable in/near this location (loot, supplies, clues, relics, tools, etc).",
+    "- Items should be practical, discoverable, gathered or uncovered in/near this location (loot, supplies, clues, relics, tools, etc).",
+    "- If actorContext is provided, tailor at least some items to that actor's class, proficiencies, and likely needs while still fitting the location.",
     "- Avoid overpowered legendary items unless the journal clearly supports it.",
     "- rationale: brief 1-3 sentence explanation of why these items fit this journal.",
     "Do not include commentary outside the JSON.",
@@ -973,6 +1078,9 @@ async function requestJournalItems({ snapshot, apiKey }) {
   const userPrompt = [
     "Generate location-based D&D5e items from this journal snapshot:",
     JSON.stringify(snapshot, null, 2),
+    actorSnapshot
+      ? `Actor context (the actor searching this location):\n${JSON.stringify(actorSnapshot, null, 2)}`
+      : "Actor context: none provided.",
   ].join("\n\n");
 
   const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
@@ -1530,7 +1638,7 @@ function sanitizeGeneratedInventoryItems(items, options = {}) {
 
 function normalizeGeneratedItemType(value) {
   const normalized = normalizeForLookup(value);
-  if (["loot", "weapon", "equipment", "consumable", "tool"].includes(normalized)) return normalized;
+  if (["loot", "weapon", "equipment", "consumable", "tool", "container"].includes(normalized)) return normalized;
   if (normalized === "material" || normalized === "treasure") return "loot";
   return "loot";
 }
@@ -1642,7 +1750,7 @@ function getActorCraftingTools(actor) {
 }
 
 function getActorCraftingIngredientItems(actor) {
-  const supportedTypes = new Set(["loot", "weapon", "equipment", "consumable", "tool"]);
+  const supportedTypes = new Set(["loot", "weapon", "equipment", "consumable", "tool", "container"]);
 
   return actor.items
     .filter((item) => supportedTypes.has(item.type))
