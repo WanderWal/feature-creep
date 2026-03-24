@@ -333,7 +333,7 @@ function injectV2ActorCraftControl(app, controls) {
 function injectLegacyActorShopButton(sheet, buttons) {
   if (!game.settings.get(MODULE_ID, "enabled")) return;
   if (!canUseModule()) return;
-  if (!isDnd5eCharacterSheet(sheet)) return;
+  if (!isDnd5eNpcSheet(sheet)) return;
 
   const existingButton = buttons.find((button) => button?.class === "feature-creep-shop-button");
   if (existingButton) return;
@@ -354,7 +354,7 @@ function injectV2ActorShopControl(app, controls) {
   if (!Array.isArray(controls)) return;
   if (!game.settings.get(MODULE_ID, "enabled")) return;
   if (!canUseModule()) return;
-  if (!isDnd5eCharacterSheet(app)) return;
+  if (!isDnd5eNpcSheet(app)) return;
 
   const existingControl = controls.find((control) => control?.action === "feature-creep-generate-shop");
   if (existingControl) return;
