@@ -65,6 +65,74 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true,
   });
+
+  game.settings.register(MODULE_ID, "shopCompendium", {
+    name: `${MODULE_ID}.settings.shopCompendium.name`,
+    hint: `${MODULE_ID}.settings.shopCompendium.hint`,
+    scope: "world",
+    config: true,
+    type: String,
+    default: "dnd5e.items",
+  });
+
+  game.settings.register(MODULE_ID, "shopCompendiumLimit", {
+    name: `${MODULE_ID}.settings.shopCompendiumLimit.name`,
+    hint: `${MODULE_ID}.settings.shopCompendiumLimit.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 25, max: 500, step: 25 },
+    default: 200,
+  });
+
+  game.settings.register(MODULE_ID, "shopUseFameosityPricing", {
+    name: `${MODULE_ID}.settings.shopUseFameosityPricing.name`,
+    hint: `${MODULE_ID}.settings.shopUseFameosityPricing.hint`,
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+  });
+
+  game.settings.register(MODULE_ID, "shopPricingRelationWeight", {
+    name: `${MODULE_ID}.settings.shopPricingRelationWeight.name`,
+    hint: `${MODULE_ID}.settings.shopPricingRelationWeight.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 0, max: 100, step: 5 },
+    default: 75,
+  });
+
+  game.settings.register(MODULE_ID, "shopPricingTendencyWeight", {
+    name: `${MODULE_ID}.settings.shopPricingTendencyWeight.name`,
+    hint: `${MODULE_ID}.settings.shopPricingTendencyWeight.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 0, max: 100, step: 5 },
+    default: 25,
+  });
+
+  game.settings.register(MODULE_ID, "shopPricingBuyImpact", {
+    name: `${MODULE_ID}.settings.shopPricingBuyImpact.name`,
+    hint: `${MODULE_ID}.settings.shopPricingBuyImpact.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 0, max: 1, step: 0.05 },
+    default: 0.45,
+  });
+
+  game.settings.register(MODULE_ID, "shopPricingSellImpact", {
+    name: `${MODULE_ID}.settings.shopPricingSellImpact.name`,
+    hint: `${MODULE_ID}.settings.shopPricingSellImpact.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 0, max: 1, step: 0.05 },
+    default: 0.6,
+  });
 });
 
 Hooks.on("getItemSheetHeaderButtons", (sheet, buttons) => {
@@ -913,11 +981,38 @@ async function generateShopForCharacter(actor) {
       return;
     }
 
+    const packId = String(game.settings.get(MODULE_ID, "shopCompendium") || "").trim();
+    if (!packId) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.shopCompendiumMissing`));
+      return;
+    }
+
+    const compendiumPack = game.packs?.get(packId) ?? null;
+    if (!compendiumPack) {
+      ui.notifications.warn(game.i18n.format(`${MODULE_ID}.notifications.shopCompendiumNotFound`, {
+        pack: packId,
+      }));
+      return;
+    }
+
+    const compendiumCandidates = await getShopCompendiumCandidates(compendiumPack);
+    if (compendiumCandidates.length === 0) {
+      ui.notifications.warn(game.i18n.format(`${MODULE_ID}.notifications.shopCompendiumNoCandidates`, {
+        pack: packId,
+      }));
+      return;
+    }
+
     ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingShop`, {
       name: actor.name,
     }));
 
-    const result = await requestCharacterShopSetup({ actor, apiKey });
+    const result = await requestCharacterShopSetup({
+      actor,
+      apiKey,
+      compendiumPack,
+      compendiumCandidates,
+    });
 
     showCharacterShopDialog(actor, result);
   } catch (error) {
@@ -1033,15 +1128,15 @@ function summarizeActorForJournalItems(actor) {
   };
 }
 
-async function requestCharacterShopSetup({ actor, apiKey }) {
+async function requestCharacterShopSetup({ actor, apiKey, compendiumPack, compendiumCandidates }) {
   const systemPrompt = [
     "You are a D&D5e (2024) merchant designer for Foundry VTT using Item Piles.",
     "Return ONLY valid JSON, no markdown.",
-    "The JSON object must contain these keys: shopName (string), shopDescription (string), merchant (object), inventory (array), rationale (string).",
+    "The JSON object must contain these keys: shopName (string), shopDescription (string), merchant (object), selections (array), rationale (string).",
     "- merchant must include: buyPriceModifier (number), sellPriceModifier (number), openTimesEnabled (boolean).",
-    "- inventory must include 8-18 items that make sense for the character and role.",
-    "- Each inventory item must have: name (string), type (one of: loot|weapon|equipment|consumable|tool|container), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (lb|kg)), price (object with value (number >= 0) and denomination (cp|sp|ep|gp|pp)).",
-    "- Keep prices and quantity plausible for a town shop in D&D5e.",
+    "- selections must include 8-18 entries chosen ONLY from the provided compendiumCandidates list.",
+    "- Each selection entry must have: id (string, exact candidate id), quantity (number >= 1).",
+    "- Do not invent ids and do not output items outside compendiumCandidates.",
     "- Do not include items whose name appears in existingInventoryNames.",
     "- shopName and shopDescription should reflect the character identity and specialties.",
     "- rationale should explain briefly why the shop stock fits the character.",
@@ -1050,7 +1145,7 @@ async function requestCharacterShopSetup({ actor, apiKey }) {
 
   const userPrompt = [
     "Generate an Item Piles merchant setup for this character:",
-    JSON.stringify(getCharacterShopGenerationSnapshot(actor), null, 2),
+    JSON.stringify(getCharacterShopGenerationSnapshot(actor, compendiumPack, compendiumCandidates), null, 2),
   ].join("\n\n");
 
   const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
@@ -1059,16 +1154,29 @@ async function requestCharacterShopSetup({ actor, apiKey }) {
     throw new Error("AI response did not parse into an object");
   }
 
+  const selections = normalizeShopCompendiumSelections(parsed.selections, compendiumCandidates);
+  if (selections.length === 0) {
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.invalidResponse`));
+    throw new Error("No valid compendium selections in AI shop response");
+  }
+
+  const builtStock = await buildShopStockFromCompendiumSelections(compendiumPack, selections);
+  if (builtStock.stockItems.length === 0) {
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.invalidResponse`));
+    throw new Error("Could not resolve selected compendium items");
+  }
+
   return {
     shopName: String(parsed.shopName || actor.name || "Generated Shop").trim().slice(0, 120),
     shopDescription: String(parsed.shopDescription || "").trim().slice(0, 2000),
     merchant: parsed.merchant && typeof parsed.merchant === "object" ? parsed.merchant : {},
-    inventory: sanitizeGeneratedInventoryItems(parsed.inventory),
+    inventory: builtStock.previewItems,
+    stockItems: builtStock.stockItems,
     rationale: String(parsed.rationale || "").trim().slice(0, 1200),
   };
 }
 
-function getCharacterShopGenerationSnapshot(actor) {
+function getCharacterShopGenerationSnapshot(actor, compendiumPack, compendiumCandidates) {
   const system = actor.system ?? {};
 
   const classes = actor.items
@@ -1094,6 +1202,12 @@ function getCharacterShopGenerationSnapshot(actor) {
     }));
 
   return {
+    compendium: {
+      id: compendiumPack?.collection ?? compendiumPack?.metadata?.id ?? null,
+      label: compendiumPack?.title ?? compendiumPack?.metadata?.label ?? null,
+      candidateCount: compendiumCandidates.length,
+      candidates: compendiumCandidates,
+    },
     actor: {
       name: actor.name,
       level: system.details?.level ?? null,
@@ -1111,6 +1225,87 @@ function getCharacterShopGenerationSnapshot(actor) {
       existingInventory,
       existingInventoryNames: existingInventory.map((item) => item.name),
     },
+  };
+}
+
+async function getShopCompendiumCandidates(compendiumPack) {
+  const supportedTypes = new Set(["loot", "weapon", "equipment", "consumable", "tool", "container"]);
+  const limit = Math.max(25, Math.min(500, Number(game.settings.get(MODULE_ID, "shopCompendiumLimit")) || 200));
+
+  const index = await compendiumPack.getIndex({
+    fields: ["name", "type", "system.price", "system.description.value"],
+  });
+
+  return Array.from(index)
+    .filter((entry) => supportedTypes.has(String(entry.type || "").trim().toLowerCase()))
+    .filter((entry) => String(entry.name || "").trim())
+    .sort((left, right) => String(left.name || "").localeCompare(String(right.name || "")))
+    .slice(0, limit)
+    .map((entry) => ({
+      id: String(entry._id || "").trim(),
+      name: String(entry.name || "").trim(),
+      type: normalizeGeneratedItemType(entry.type),
+      price: foundry.utils.deepClone(entry.system?.price ?? {}),
+      summary: htmlToText(entry.system?.description?.value ?? "").trim().slice(0, 180),
+    }))
+    .filter((entry) => entry.id);
+}
+
+function normalizeShopCompendiumSelections(selections, candidates) {
+  const candidateIds = new Set((Array.isArray(candidates) ? candidates : []).map((candidate) => candidate.id));
+  const mergedById = new Map();
+
+  for (const selection of Array.isArray(selections) ? selections : []) {
+    if (!selection || typeof selection !== "object") continue;
+
+    const id = String(selection.id || selection._id || selection.itemId || "").trim();
+    if (!id || !candidateIds.has(id)) continue;
+
+    const quantity = Math.max(1, Math.min(99, Math.round(Number(selection.quantity) || 1)));
+    mergedById.set(id, Math.min(99, (mergedById.get(id) ?? 0) + quantity));
+  }
+
+  return Array.from(mergedById.entries()).map(([id, quantity]) => ({ id, quantity }));
+}
+
+async function buildShopStockFromCompendiumSelections(compendiumPack, selections) {
+  const stockItems = [];
+  const previewItems = [];
+
+  for (const selection of selections) {
+    let doc = null;
+    try {
+      doc = await compendiumPack.getDocument(selection.id);
+    } catch {
+      doc = null;
+    }
+    if (!doc) continue;
+
+    const quantity = Math.max(1, Math.min(99, Math.round(Number(selection.quantity) || 1)));
+    const itemData = doc.toObject();
+    foundry.utils.setProperty(itemData, "system.quantity", quantity);
+
+    stockItems.push({ item: itemData, quantity });
+
+    previewItems.push({
+      name: String(doc.name || "").trim().slice(0, 100),
+      type: normalizeGeneratedItemType(doc.type),
+      quantity,
+      description: htmlToText(doc.system?.description?.value ?? "").trim().slice(0, 2000),
+      weightValue: Math.max(0, Number(doc.system?.weight?.value) || 0),
+      weightUnits: ["lb", "kg"].includes(String(doc.system?.weight?.units || "").toLowerCase())
+        ? String(doc.system?.weight?.units || "").toLowerCase()
+        : getDefaultWeightUnit(),
+      priceValue: Math.max(0, Number(doc.system?.price?.value) || 0),
+      priceDenom: ["cp", "sp", "ep", "gp", "pp"].includes(String(doc.system?.price?.denomination || "").toLowerCase())
+        ? String(doc.system?.price?.denomination || "").toLowerCase()
+        : "gp",
+    });
+  }
+
+  return {
+    stockItems,
+    previewItems,
   };
 }
 
@@ -1160,6 +1355,7 @@ async function applyCharacterShopToActor(actor, result) {
 
     const api = game.itempiles?.API;
     const items = Array.isArray(result.inventory) ? result.inventory : [];
+    const stockItems = Array.isArray(result.stockItems) ? result.stockItems : [];
 
     const merchantData = {
       enabled: true,
@@ -1185,34 +1381,53 @@ async function applyCharacterShopToActor(actor, result) {
       });
     }
 
-    if (items.length > 0) {
-      const addData = items.map((item) => ({
-        item: {
-          name: item.name,
-          type: item.type,
-          system: {
-            description: {
-              value: item.description ? `<p>${item.description}</p>` : "",
+    const addData = stockItems.length > 0
+      ? stockItems.map((entry) => {
+        const item = foundry.utils.deepClone(entry.item ?? {});
+        const quantity = Math.max(1, Math.min(99, Math.round(Number(entry.quantity) || 1)));
+
+        foundry.utils.setProperty(item, "system.quantity", quantity);
+        item.flags = item.flags ?? {};
+        item.flags[MODULE_ID] = {
+          ...(item.flags[MODULE_ID] ?? {}),
+          generatedShopStock: true,
+          generatedAt: Date.now(),
+        };
+
+        return {
+          item,
+          quantity,
+        };
+      })
+      : items.map((item) => ({
+          item: {
+            name: item.name,
+            type: item.type,
+            system: {
+              description: {
+                value: item.description ? `<p>${item.description}</p>` : "",
+              },
+              quantity: item.quantity,
+              weight: {
+                value: item.weightValue,
+                units: item.weightUnits,
+              },
+              price: {
+                value: item.priceValue,
+                denomination: item.priceDenom,
+              },
             },
-            quantity: item.quantity,
-            weight: {
-              value: item.weightValue,
-              units: item.weightUnits,
-            },
-            price: {
-              value: item.priceValue,
-              denomination: item.priceDenom,
+            flags: {
+              [MODULE_ID]: {
+                generatedShopStock: true,
+                generatedAt: Date.now(),
+              },
             },
           },
-          flags: {
-            [MODULE_ID]: {
-              generatedShopStock: true,
-              generatedAt: Date.now(),
-            },
-          },
-        },
-        quantity: item.quantity,
-      }));
+          quantity: item.quantity,
+        }));
+
+    if (addData.length > 0) {
 
       if (typeof api?.addItems === "function") {
         await api.addItems(actor, addData);
@@ -1221,10 +1436,18 @@ async function applyCharacterShopToActor(actor, result) {
       }
     }
 
+    const pricingResult = await applyFameosityPricingToMerchant(actor, merchantData);
+
     ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.shopApplied`, {
       count: items.length,
       name: actor.name,
     }));
+
+    if (pricingResult.applied) {
+      ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.shopPricingApplied`, {
+        count: pricingResult.count,
+      }));
+    }
   } catch (error) {
     console.error(`${MODULE_ID} | failed to apply generated shop`, error);
     ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.shopApplyFailed`));
@@ -2866,6 +3089,149 @@ async function applyItemMacro(item, itemMacro) {
     "flags.dae.macro.command": command,
     "flags.midi-qol.onUseMacroName": "[postActiveEffects]ItemMacro",
   });
+}
+
+async function applyFameosityPricingToMerchant(npcActor, merchantData) {
+  try {
+    const config = getShopPricingConfig();
+    if (!config.enabled) return { applied: false, count: 0 };
+
+    const fameosityApi = getFameosityApi();
+    if (!fameosityApi) return { applied: false, count: 0 };
+    if (typeof game.itempiles?.API?.updateMerchantPriceModifiers !== "function") return { applied: false, count: 0 };
+
+    const playerCharacters = getFameosityPlayerCharacters(fameosityApi);
+    if (playerCharacters.length === 0) return { applied: false, count: 0 };
+
+    const npcTendency = getFameosityNpcTendency(fameosityApi, npcActor.id);
+    const baseBuy = clampShopModifier(merchantData?.buyPriceModifier, 1);
+    const baseSell = clampShopModifier(merchantData?.sellPriceModifier, 0.5);
+
+    const modifierData = [];
+
+    for (const pc of playerCharacters) {
+      const relation = getFameosityNpcRelationToPc(fameosityApi, npcActor.id, pc.id);
+      const reputationScore = computeWeightedReputationScore(relation, npcTendency, config);
+      const pricing = computeReputationPriceModifiers(baseBuy, baseSell, reputationScore, config);
+
+      modifierData.push({
+        actor: pc,
+        buyPriceModifier: pricing.buyPriceModifier,
+        sellPriceModifier: pricing.sellPriceModifier,
+        override: true,
+        relative: false,
+      });
+    }
+
+    if (modifierData.length === 0) return { applied: false, count: 0 };
+
+    await game.itempiles.API.updateMerchantPriceModifiers(npcActor, modifierData);
+
+    return {
+      applied: true,
+      count: modifierData.length,
+    };
+  } catch (error) {
+    console.warn(`${MODULE_ID} | fameosity pricing integration failed`, error);
+    return { applied: false, count: 0 };
+  }
+}
+
+function getFameosityApi() {
+  const moduleApi = game.modules?.get("fameosity")?.api;
+  if (moduleApi) return moduleApi;
+
+  const legacyApi = globalThis.SweetyUtilities;
+  if (legacyApi && typeof legacyApi === "object") return legacyApi;
+
+  return null;
+}
+
+function getFameosityPlayerCharacters(fameosityApi) {
+  if (typeof fameosityApi.getPCs === "function") {
+    const pcs = fameosityApi.getPCs();
+    if (Array.isArray(pcs) && pcs.length > 0) return pcs;
+  }
+
+  return Array.from(game.actors ?? []).filter((actor) => actor?.type === "character" && actor?.hasPlayerOwner);
+}
+
+function getFameosityNpcTendency(fameosityApi, npcId) {
+  let tendency = 0;
+
+  if (typeof fameosityApi.getEffectiveActorRep === "function") {
+    tendency = Number(fameosityApi.getEffectiveActorRep(npcId) ?? 0);
+  } else if (typeof fameosityApi.getActorRep === "function") {
+    tendency = Number(fameosityApi.getActorRep(npcId) ?? 0);
+  }
+
+  return clampReputationScore(tendency);
+}
+
+function getFameosityNpcRelationToPc(fameosityApi, npcId, pcId) {
+  if (typeof fameosityApi.getIndRel !== "function") return 0;
+
+  return clampReputationScore(Number(fameosityApi.getIndRel(npcId, pcId) ?? 0));
+}
+
+function clampReputationScore(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(-100, Math.min(100, numeric));
+}
+
+function getShopPricingConfig() {
+  const enabled = game.settings.get(MODULE_ID, "shopUseFameosityPricing") !== false;
+
+  const relationWeight = Math.max(0, Number(game.settings.get(MODULE_ID, "shopPricingRelationWeight")) || 0);
+  const tendencyWeight = Math.max(0, Number(game.settings.get(MODULE_ID, "shopPricingTendencyWeight")) || 0);
+
+  const buyImpact = Math.max(0, Math.min(1, Number(game.settings.get(MODULE_ID, "shopPricingBuyImpact")) || 0));
+  const sellImpact = Math.max(0, Math.min(1, Number(game.settings.get(MODULE_ID, "shopPricingSellImpact")) || 0));
+
+  return {
+    enabled,
+    relationWeight,
+    tendencyWeight,
+    buyImpact,
+    sellImpact,
+  };
+}
+
+function computeWeightedReputationScore(relation, tendency, config) {
+  const relationWeight = Math.max(0, Number(config?.relationWeight) || 0);
+  const tendencyWeight = Math.max(0, Number(config?.tendencyWeight) || 0);
+  const total = relationWeight + tendencyWeight;
+
+  if (total <= 0) {
+    return clampReputationScore(Math.round((clampReputationScore(relation) * 0.75) + (clampReputationScore(tendency) * 0.25)));
+  }
+
+  const weighted = ((clampReputationScore(relation) * relationWeight) + (clampReputationScore(tendency) * tendencyWeight)) / total;
+  return clampReputationScore(Math.round(weighted));
+}
+
+function computeReputationPriceModifiers(baseBuy, baseSell, reputationScore, config = {}) {
+  const normalized = clampReputationScore(reputationScore) / 100;
+
+  const buyImpact = Math.max(0, Math.min(1, Number(config.buyImpact) || 0));
+  const sellImpact = Math.max(0, Math.min(1, Number(config.sellImpact) || 0));
+
+  const buyShift = buyImpact * normalized;
+  const sellShift = sellImpact * normalized;
+
+  const buyPriceModifier = roundPriceModifier(Math.max(0.05, baseBuy * (1 - buyShift)), baseBuy);
+  const sellPriceModifier = roundPriceModifier(Math.max(0.05, baseSell * (1 + sellShift)), baseSell);
+
+  return {
+    buyPriceModifier,
+    sellPriceModifier,
+  };
+}
+
+function roundPriceModifier(value, fallback) {
+  const rounded = Math.round(Number(value) * 100) / 100;
+  return clampShopModifier(rounded, fallback);
 }
 
 async function applyIntegrationFlags(item, integrationFlags) {
