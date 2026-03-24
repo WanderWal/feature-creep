@@ -19,6 +19,7 @@
   "feature-creep.button.generateLoot": "AI Generate Loot",
   "feature-creep.button.generateJournalItems": "AI Journal Items",
   "feature-creep.button.craft": "AI Craft",
+  "feature-creep.button.generateShop": "AI Shop",
   "feature-creep.notifications.apiKeyMissing": "Set your Anthropic API key in Feature Creep settings first.",
   "feature-creep.notifications.gmOnly": "Feature Creep can only be used by the Game Master.",
   "feature-creep.notifications.noDescription": "Item description is empty. Add a description before running AI setup.",
@@ -49,6 +50,11 @@
   "feature-creep.notifications.recipeCreateNone": "No recipes were created from the generated outputs.",
   "feature-creep.notifications.recipeCreateFailed": "Feature Creep failed while creating Beavers Crafting recipes. Check console for details.",
   "feature-creep.notifications.recipeIntegrationMissing": "Recipe integration requires active modules: beavers-system-interface, beavers-crafting, and bsa-dnd5e.",
+  "feature-creep.notifications.shopIntegrationMissing": "Shop setup requires active modules: item-piles and itempilesdnd5e.",
+  "feature-creep.notifications.generatingShop": "Generating shop inventory for {name}…",
+  "feature-creep.notifications.shopApplied": "Set up {name} as an Item Piles shop and added {count} stock item(s).",
+  "feature-creep.notifications.shopFailed": "Feature Creep failed while generating shop data. Check console for details.",
+  "feature-creep.notifications.shopApplyFailed": "Feature Creep failed while applying shop data to Item Piles. Check console for details.",
   "feature-creep.notifications.noCraftingTools": "This actor needs at least one tool before crafting items can be generated.",
   "feature-creep.notifications.noCraftingItems": "This actor needs at least one inventory item to use as a crafting input.",
   "feature-creep.notifications.selectCraftItems": "Select at least one inventory item to use for crafting.",
@@ -97,5 +103,10 @@
   "feature-creep.journalDialog.actorPromptContent": "Select which actor is searching this location to tailor generated items to their sheet data.",
   "feature-creep.journalDialog.actorLabel": "Searching Actor",
   "feature-creep.journalDialog.actorNone": "No actor context",
-  "feature-creep.journalDialog.actorSubmit": "Generate Items"
+  "feature-creep.journalDialog.actorSubmit": "Generate Items",
+  "feature-creep.shopDialog.title": "Generated Shop: {name}",
+  "feature-creep.shopDialog.shopName": "Shop Name",
+  "feature-creep.shopDialog.shopDescription": "Shop Description",
+  "feature-creep.shopDialog.noItems": "No shop stock was generated.",
+  "feature-creep.shopDialog.apply": "Apply to Item Piles"
 }

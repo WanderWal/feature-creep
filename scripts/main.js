@@ -76,6 +76,7 @@ Hooks.on("getActorSheetHeaderButtons", (sheet, buttons) => {
   injectLegacyActorGuessButton(sheet, buttons);
   injectLegacyActorLootButton(sheet, buttons);
   injectLegacyActorCraftButton(sheet, buttons);
+  injectLegacyActorShopButton(sheet, buttons);
 });
 
 Hooks.on("getJournalSheetHeaderButtons", (sheet, buttons) => {
@@ -91,6 +92,7 @@ Hooks.on("getHeaderControlsActorSheet5e2", (sheet, buttons) => {
   injectV2ActorGuessControl(sheet, buttons);
   injectV2ActorLootControl(sheet, buttons);
   injectV2ActorCraftControl(sheet, buttons);
+  injectV2ActorShopControl(sheet, buttons);
 });
 
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
@@ -99,6 +101,7 @@ Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   injectV2ActorGuessControl(app, controls);
   injectV2ActorLootControl(app, controls);
   injectV2ActorCraftControl(app, controls);
+  injectV2ActorShopControl(app, controls);
   injectV2JournalItemsControl(app, controls);
 });
 
@@ -327,6 +330,49 @@ function injectV2ActorCraftControl(app, controls) {
   });
 }
 
+function injectLegacyActorShopButton(sheet, buttons) {
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eCharacterSheet(sheet)) return;
+
+  const existingButton = buttons.find((button) => button?.class === "feature-creep-shop-button");
+  if (existingButton) return;
+
+  buttons.unshift({
+    class: "feature-creep-shop-button",
+    icon: "fas fa-store",
+    label: game.i18n.localize(`${MODULE_ID}.button.generateShop`),
+    onclick: async () => {
+      const actor = sheet.document;
+      if (!actor) return;
+      await generateShopForCharacter(actor);
+    },
+  });
+}
+
+function injectV2ActorShopControl(app, controls) {
+  if (!Array.isArray(controls)) return;
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+  if (!isDnd5eCharacterSheet(app)) return;
+
+  const existingControl = controls.find((control) => control?.action === "feature-creep-generate-shop");
+  if (existingControl) return;
+
+  controls.unshift({
+    action: "feature-creep-generate-shop",
+    class: "feature-creep-shop-button",
+    icon: "fas fa-store",
+    label: game.i18n.localize(`${MODULE_ID}.button.generateShop`),
+    visible: true,
+    onClick: async () => {
+      const actor = app?.document;
+      if (!actor) return;
+      await generateShopForCharacter(actor);
+    },
+  });
+}
+
 function injectLegacyJournalItemsButton(sheet, buttons) {
   if (!game.settings.get(MODULE_ID, "enabled")) return;
   if (!canUseModule()) return;
@@ -384,6 +430,12 @@ function isDnd5eNpcSheet(sheet) {
   const actor = sheet?.document;
   if (!actor) return false;
   return game.system?.id === "dnd5e" && actor.documentName === "Actor" && actor.type === "npc";
+}
+
+function isDnd5eCharacterSheet(sheet) {
+  const actor = sheet?.document;
+  if (!actor) return false;
+  return game.system?.id === "dnd5e" && actor.documentName === "Actor" && actor.type === "character";
 }
 
 function isDnd5eCraftingActorSheet(sheet) {
@@ -843,6 +895,45 @@ async function generateItemsFromJournal(sourceDocument) {
   }
 }
 
+async function generateShopForCharacter(actor) {
+  try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
+    if (!isItemPilesShopIntegrationAvailable()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.shopIntegrationMissing`));
+      return;
+    }
+
+    const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
+    if (!apiKey) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
+      return;
+    }
+
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingShop`, {
+      name: actor.name,
+    }));
+
+    const result = await requestCharacterShopSetup({ actor, apiKey });
+
+    showCharacterShopDialog(actor, result);
+  } catch (error) {
+    console.error(`${MODULE_ID} | shop generation failed`, error);
+
+    const message = String(error?.message || "");
+    const isCorsError = error instanceof TypeError && /fetch|failed|cors|network/i.test(message);
+    if (isCorsError) {
+      ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.corsBlocked`));
+      return;
+    }
+
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.shopFailed`));
+  }
+}
+
 async function promptForJournalActorSelection() {
   const actors = getJournalCandidateActors();
 
@@ -940,6 +1031,218 @@ function summarizeActorForJournalItems(actor) {
       }))
       .slice(0, 80),
   };
+}
+
+async function requestCharacterShopSetup({ actor, apiKey }) {
+  const systemPrompt = [
+    "You are a D&D5e (2024) merchant designer for Foundry VTT using Item Piles.",
+    "Return ONLY valid JSON, no markdown.",
+    "The JSON object must contain these keys: shopName (string), shopDescription (string), merchant (object), inventory (array), rationale (string).",
+    "- merchant must include: buyPriceModifier (number), sellPriceModifier (number), openTimesEnabled (boolean).",
+    "- inventory must include 8-18 items that make sense for the character and role.",
+    "- Each inventory item must have: name (string), type (one of: loot|weapon|equipment|consumable|tool|container), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (lb|kg)), price (object with value (number >= 0) and denomination (cp|sp|ep|gp|pp)).",
+    "- Keep prices and quantity plausible for a town shop in D&D5e.",
+    "- Do not include items whose name appears in existingInventoryNames.",
+    "- shopName and shopDescription should reflect the character identity and specialties.",
+    "- rationale should explain briefly why the shop stock fits the character.",
+    "Do not include commentary outside JSON.",
+  ].join("\n");
+
+  const userPrompt = [
+    "Generate an Item Piles merchant setup for this character:",
+    JSON.stringify(getCharacterShopGenerationSnapshot(actor), null, 2),
+  ].join("\n\n");
+
+  const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  return {
+    shopName: String(parsed.shopName || actor.name || "Generated Shop").trim().slice(0, 120),
+    shopDescription: String(parsed.shopDescription || "").trim().slice(0, 2000),
+    merchant: parsed.merchant && typeof parsed.merchant === "object" ? parsed.merchant : {},
+    inventory: sanitizeGeneratedInventoryItems(parsed.inventory),
+    rationale: String(parsed.rationale || "").trim().slice(0, 1200),
+  };
+}
+
+function getCharacterShopGenerationSnapshot(actor) {
+  const system = actor.system ?? {};
+
+  const classes = actor.items
+    .filter((item) => item?.type === "class")
+    .map((item) => ({
+      name: item.name,
+      level: item.system?.levels ?? null,
+      subclass: item.system?.subclass?.name ?? null,
+    }));
+
+  const tools = actor.items
+    .filter((item) => item?.type === "tool")
+    .map((item) => item.name)
+    .slice(0, 30);
+
+  const existingInventory = actor.items
+    .filter((item) => ["loot", "weapon", "equipment", "consumable", "tool", "container"].includes(item.type))
+    .map((item) => ({
+      name: item.name,
+      type: item.type,
+      quantity: item.system?.quantity ?? null,
+      price: foundry.utils.deepClone(item.system?.price ?? {}),
+    }));
+
+  return {
+    actor: {
+      name: actor.name,
+      level: system.details?.level ?? null,
+      race: system.details?.race ?? null,
+      background: system.details?.background ?? null,
+      biography: htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 2000),
+      classes,
+      abilities: summarizeAbilitiesForCrGuess(system.abilities ?? {}),
+      proficiencies: {
+        skills: foundry.utils.deepClone(system.skills ?? {}),
+        tools: foundry.utils.deepClone(system.tools ?? {}),
+        languages: foundry.utils.deepClone(system.traits?.languages ?? {}),
+      },
+      knownTools: tools,
+      existingInventory,
+      existingInventoryNames: existingInventory.map((item) => item.name),
+    },
+  };
+}
+
+function showCharacterShopDialog(actor, result) {
+  const items = Array.isArray(result.inventory) ? result.inventory : [];
+  const rationale = foundry.utils.escapeHTML(result.rationale || "");
+  const shopDescription = foundry.utils.escapeHTML(result.shopDescription || "");
+  const tableHtml = buildGeneratedItemTable(items, `${MODULE_ID}.shopDialog.noItems`);
+
+  const buttons = {
+    close: {
+      label: game.i18n.localize("Close"),
+    },
+  };
+
+  if (items.length > 0) {
+    buttons.apply = {
+      label: game.i18n.localize(`${MODULE_ID}.shopDialog.apply`),
+      callback: () => applyCharacterShopToActor(actor, result),
+    };
+  }
+
+  const dialog = new Dialog({
+    title: game.i18n.format(`${MODULE_ID}.shopDialog.title`, {
+      name: foundry.utils.escapeHTML(actor.name ?? ""),
+    }),
+    content: `
+      <div class="feature-creep-shop-result">
+        <p><strong>${game.i18n.localize(`${MODULE_ID}.shopDialog.shopName`)}</strong>: ${foundry.utils.escapeHTML(result.shopName || actor.name || "")}</p>
+        ${shopDescription ? `<p><strong>${game.i18n.localize(`${MODULE_ID}.shopDialog.shopDescription`)}</strong>: ${shopDescription}</p>` : ""}
+        ${tableHtml}
+        ${rationale ? `<p class="feature-creep-loot-rationale"><em>${rationale}</em></p>` : ""}
+      </div>`,
+    buttons,
+    default: items.length > 0 ? "apply" : "close",
+  });
+
+  dialog.render(true);
+}
+
+async function applyCharacterShopToActor(actor, result) {
+  try {
+    if (!isItemPilesShopIntegrationAvailable()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.shopIntegrationMissing`));
+      return;
+    }
+
+    const api = game.itempiles?.API;
+    const items = Array.isArray(result.inventory) ? result.inventory : [];
+
+    const merchantData = {
+      enabled: true,
+      type: "merchant",
+      closed: false,
+      locked: false,
+      buyPriceModifier: clampShopModifier(result?.merchant?.buyPriceModifier, 1),
+      sellPriceModifier: clampShopModifier(result?.merchant?.sellPriceModifier, 0.5),
+      overrideSingleItemScale: true,
+      singleItemScale: 1,
+      description: String(result.shopDescription || "").trim().slice(0, 2000),
+      shopName: String(result.shopName || actor.name || "").trim().slice(0, 120),
+      openTimes: {
+        enabled: Boolean(result?.merchant?.openTimesEnabled),
+      },
+    };
+
+    if (typeof api?.updateItemPile === "function") {
+      await api.updateItemPile(actor, merchantData);
+    } else {
+      await actor.update({
+        "flags.item-piles.data": merchantData,
+      });
+    }
+
+    if (items.length > 0) {
+      const addData = items.map((item) => ({
+        item: {
+          name: item.name,
+          type: item.type,
+          system: {
+            description: {
+              value: item.description ? `<p>${item.description}</p>` : "",
+            },
+            quantity: item.quantity,
+            weight: {
+              value: item.weightValue,
+              units: item.weightUnits,
+            },
+            price: {
+              value: item.priceValue,
+              denomination: item.priceDenom,
+            },
+          },
+          flags: {
+            [MODULE_ID]: {
+              generatedShopStock: true,
+              generatedAt: Date.now(),
+            },
+          },
+        },
+        quantity: item.quantity,
+      }));
+
+      if (typeof api?.addItems === "function") {
+        await api.addItems(actor, addData);
+      } else {
+        await actor.createEmbeddedDocuments("Item", addData.map((entry) => entry.item));
+      }
+    }
+
+    ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.shopApplied`, {
+      count: items.length,
+      name: actor.name,
+    }));
+  } catch (error) {
+    console.error(`${MODULE_ID} | failed to apply generated shop`, error);
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.shopApplyFailed`));
+  }
+}
+
+function clampShopModifier(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(10, numeric));
+}
+
+function isItemPilesShopIntegrationAvailable() {
+  const itemPiles = game.modules?.get("item-piles")?.active;
+  const dnd5eBridge = game.modules?.get("itempilesdnd5e")?.active;
+  const apiAvailable = Boolean(game.itempiles?.API);
+
+  return Boolean(itemPiles && dnd5eBridge && apiAvailable);
 }
 
 async function requestCraftedItems({ actor, artisanTool, ingredientResources, notes, apiKey }) {
