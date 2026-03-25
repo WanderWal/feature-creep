@@ -1134,6 +1134,9 @@ async function requestCharacterShopSetup({ actor, apiKey, compendiumPack, compen
     "Return ONLY valid JSON, no markdown.",
     "The JSON object must contain these keys: shopName (string), shopDescription (string), merchant (object), selections (array), rationale (string).",
     "- merchant must include: buyPriceModifier (number), sellPriceModifier (number), openTimesEnabled (boolean).",
+    "- IMPORTANT: buyPriceModifier is what players pay when buying from the merchant (usually > 1 for markup, e.g. 1.10 = 110%).",
+    "- IMPORTANT: sellPriceModifier is what players receive when selling to the merchant (usually < 1, e.g. 0.50 = 50%).",
+    "- buyPriceModifier must be greater than or equal to sellPriceModifier.",
     "- selections must include 8-18 entries chosen ONLY from the provided compendiumCandidates list.",
     "- Each selection entry must have: id (string, exact candidate id), quantity (number >= 1).",
     "- Do not invent ids and do not output items outside compendiumCandidates.",
@@ -1357,21 +1360,32 @@ async function applyCharacterShopToActor(actor, result) {
     const items = Array.isArray(result.inventory) ? result.inventory : [];
     const stockItems = Array.isArray(result.stockItems) ? result.stockItems : [];
 
+    const normalizedMerchant = normalizeAiMerchantModifiers(result?.merchant);
+    const existingShopDescription = getExistingShopDescription(actor);
+    const generatedShopDescription = String(result.shopDescription || "").trim().slice(0, 2000);
+
     const merchantData = {
       enabled: true,
       type: "merchant",
       closed: false,
       locked: false,
-      buyPriceModifier: clampShopModifier(result?.merchant?.buyPriceModifier, 1),
-      sellPriceModifier: clampShopModifier(result?.merchant?.sellPriceModifier, 0.5),
+      buyPriceModifier: normalizedMerchant.buyPriceModifier,
+      sellPriceModifier: normalizedMerchant.sellPriceModifier,
       overrideSingleItemScale: true,
       singleItemScale: 1,
-      description: String(result.shopDescription || "").trim().slice(0, 2000),
+      description: existingShopDescription || generatedShopDescription,
       shopName: String(result.shopName || actor.name || "").trim().slice(0, 120),
       openTimes: {
         enabled: Boolean(result?.merchant?.openTimesEnabled),
       },
     };
+
+    const baseSpread = normalizeMerchantPriceSpread(
+      merchantData.buyPriceModifier,
+      merchantData.sellPriceModifier,
+    );
+    merchantData.buyPriceModifier = baseSpread.buyPriceModifier;
+    merchantData.sellPriceModifier = baseSpread.sellPriceModifier;
 
     if (typeof api?.updateItemPile === "function") {
       await api.updateItemPile(actor, merchantData);
@@ -1458,6 +1472,41 @@ function clampShopModifier(value, fallback) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return Math.max(0, Math.min(10, numeric));
+}
+
+function parseAiMerchantModifier(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+
+  // Accept percent-style outputs from AI (e.g. 110, 50) and convert to decimal multipliers.
+  if (numeric > 10) {
+    return clampShopModifier(numeric / 100, fallback);
+  }
+
+  return clampShopModifier(numeric, fallback);
+}
+
+function normalizeAiMerchantModifiers(merchant) {
+  let buyPriceModifier = parseAiMerchantModifier(merchant?.buyPriceModifier, 1.1);
+  let sellPriceModifier = parseAiMerchantModifier(merchant?.sellPriceModifier, 0.5);
+
+  // Correct common AI field inversion (buy/sell swapped).
+  if (buyPriceModifier < sellPriceModifier) {
+    const previousBuy = buyPriceModifier;
+    buyPriceModifier = sellPriceModifier;
+    sellPriceModifier = previousBuy;
+  }
+
+  return normalizeMerchantPriceSpread(buyPriceModifier, sellPriceModifier);
+}
+
+function getExistingShopDescription(actor) {
+  const fromItemPilesFlag = foundry.utils.getProperty(actor, "flags.item-piles.data.description");
+  if (typeof fromItemPilesFlag === "string" && fromItemPilesFlag.trim()) {
+    return fromItemPilesFlag.trim();
+  }
+
+  return "";
 }
 
 function isItemPilesShopIntegrationAvailable() {
@@ -3223,15 +3272,36 @@ function computeReputationPriceModifiers(baseBuy, baseSell, reputationScore, con
   const buyPriceModifier = roundPriceModifier(Math.max(0.05, baseBuy * (1 - buyShift)), baseBuy);
   const sellPriceModifier = roundPriceModifier(Math.max(0.05, baseSell * (1 + sellShift)), baseSell);
 
+  const adjusted = normalizeMerchantPriceSpread(buyPriceModifier, sellPriceModifier);
+
   return {
-    buyPriceModifier,
-    sellPriceModifier,
+    buyPriceModifier: adjusted.buyPriceModifier,
+    sellPriceModifier: adjusted.sellPriceModifier,
   };
 }
 
 function roundPriceModifier(value, fallback) {
   const rounded = Math.round(Number(value) * 100) / 100;
   return clampShopModifier(rounded, fallback);
+}
+
+function normalizeMerchantPriceSpread(buyPriceModifier, sellPriceModifier) {
+  const buy = Math.max(0.05, clampShopModifier(buyPriceModifier, 1));
+  const sell = Math.max(0.05, clampShopModifier(sellPriceModifier, 0.5));
+
+  const minSpread = 0.05;
+  if (sell <= buy - minSpread) {
+    return {
+      buyPriceModifier: roundPriceModifier(buy, 1),
+      sellPriceModifier: roundPriceModifier(sell, 0.5),
+    };
+  }
+
+  const adjustedSell = Math.max(0.05, buy - minSpread);
+  return {
+    buyPriceModifier: roundPriceModifier(buy, 1),
+    sellPriceModifier: roundPriceModifier(adjustedSell, 0.5),
+  };
 }
 
 async function applyIntegrationFlags(item, integrationFlags) {
