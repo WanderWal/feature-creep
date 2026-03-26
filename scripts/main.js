@@ -741,8 +741,8 @@ async function generateCraftedItemsForActor(actor) {
     }));
 
     const result = await requestCraftedItems({
-      actor,
       artisanTool: selection.artisanTool,
+      toolProficiencyProfile: getToolProficiencyProfile(actor, selection.artisanTool),
       ingredientResources: selection.ingredientResources,
       notes: selection.notes,
       apiKey,
@@ -1517,34 +1517,40 @@ function isItemPilesShopIntegrationAvailable() {
   return Boolean(itemPiles && dnd5eBridge && apiAvailable);
 }
 
-async function requestCraftedItems({ actor, artisanTool, ingredientResources, notes, apiKey }) {
+async function requestCraftedItems({ artisanTool, toolProficiencyProfile, ingredientResources, notes, apiKey }) {
   const recipeIntegrationActive = isBeaversCraftingIntegrationAvailable();
 
   const systemPrompt = [
     "You are a D&D5e (2024) crafting assistant for Foundry VTT used by a DM to build a crafting system.",
     "Return ONLY valid JSON, no markdown.",
     "The JSON object must contain these keys: items (array), rationale (string).",
-    "- items: array of 1-4 crafted output items.",
+    "- items: array of 0-4 crafted output items.",
     "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|container|treasure), quantity (number >= 1), craftingDc (number), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
     "- The output items must plausibly be crafted using the selected tool and the provided ingredient resources with quantities.",
+    "- If the selected tool and provided resources cannot plausibly produce a meaningful craft result, return items as an empty array.",
     "- Prefer transforming, refining, combining, or improving the provided ingredients rather than inventing unrelated treasure.",
+    "- Every output item must clearly consume all selected ingredient resources; do not ignore the selected resources.",
+    "- Resource usage must be materially sensible (for example: metal inputs for smithing outputs, wood/leather/textile for fitting outputs, herbs/chemicals for alchemical outputs).",
+    "- Do not treat listed ingredients as optional flavor text; assume selected quantities are intended to be spent as crafting inputs.",
     "- If the ingredients are not enough for a complete finished good, return sensible intermediate goods, components, or materials instead.",
     "- Do not include the selected tool itself as an output item.",
     "- Do not merely copy ingredient items unchanged unless a processed or improved version is justified.",
+    "- Do not personalize outputs to a specific actor's identity, biography, or class.",
+    "- Use toolProficiencyProfile only to tune complexity and craftingDc, not to gate what can exist in the world.",
     "- If an output item is intended to be used as a crafting/check implement (kit, instrument, artisan tool, or utility tool), set its type to tool.",
     "- craftingDc must be a practical tool check DC in the 3-30 range and should scale with complexity and resource quality.",
-    "- Take the selected tool check profile into account. If the tool check is strong, use lower or moderate DCs; if weak, use higher DCs for complex outputs.",
+    "- Lower proficiency should bias toward simpler outputs and/or higher riskier DCs; higher proficiency should allow more refined outputs and/or lower practical DCs.",
     recipeIntegrationActive
       ? "- These outputs will be turned into Beavers Crafting recipes by a DM tool, so each item should be a clear craft result with a meaningful, playable craftingDc and coherent required resources."
       : "",
-    "- rationale: brief 1-3 sentence explanation of how the selected tool and ingredients support the crafted output.",
+    "- rationale: brief 1-3 sentence explanation of how the selected tool and ingredients support the crafted output, or why no valid outputs were produced.",
     "Do not include commentary outside the JSON.",
   ].filter(Boolean).join("\n");
 
   const userPrompt = [
-    "Generate crafted output items based on this actor, selected tool, selected ingredient resources, and tool check profile.",
+    "Generate crafted output items based on selected tool, tool proficiency profile, selected ingredient resources, and optional notes.",
     "Crafting snapshot:",
-    JSON.stringify(getCraftingGenerationSnapshot(actor, artisanTool, ingredientResources, notes), null, 2),
+    JSON.stringify(getCraftingGenerationSnapshot(artisanTool, toolProficiencyProfile, ingredientResources, notes), null, 2),
   ].join("\n\n");
 
   const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
@@ -1559,17 +1565,10 @@ async function requestCraftedItems({ actor, artisanTool, ingredientResources, no
   return { items, rationale };
 }
 
-function getCraftingGenerationSnapshot(actor, artisanTool, ingredientResources, notes) {
-  const system = actor.system ?? {};
-
+function getCraftingGenerationSnapshot(artisanTool, toolProficiencyProfile, ingredientResources, notes) {
   return {
-    actor: {
-      name: actor.name,
-      type: actor.type,
-      biography: htmlToText(system.details?.biography?.value ?? "").trim().slice(0, 1500),
-    },
     tool: summarizeCraftingItem(artisanTool),
-    toolCheck: getToolCheckProfile(actor, artisanTool),
+    toolProficiencyProfile,
     ingredientResources: ingredientResources.map((resource) => ({
       selectedQuantity: resource.quantity,
       availableQuantity: resource.available,
@@ -1579,17 +1578,27 @@ function getCraftingGenerationSnapshot(actor, artisanTool, ingredientResources, 
   };
 }
 
-function getToolCheckProfile(actor, toolItem) {
+function getToolProficiencyProfile(actor, toolItem) {
   const toolKey = String(toolItem?.system?.type?.baseItem || "").trim();
   const toolData = toolKey ? actor.system?.tools?.[toolKey] ?? null : null;
   const total = Number(toolData?.total);
+  const proficiencyValue = Number(toolData?.value);
 
   return {
     key: toolKey || null,
     ability: toolData?.ability ?? null,
-    proficiency: toolData?.value ?? null,
+    proficiency: Number.isFinite(proficiencyValue) ? proficiencyValue : null,
     total: Number.isFinite(total) ? total : null,
+    tier: getToolProficiencyTier(total),
   };
+}
+
+function getToolProficiencyTier(total) {
+  if (!Number.isFinite(total)) return "unknown";
+  if (total <= 2) return "novice";
+  if (total <= 6) return "trained";
+  if (total <= 10) return "expert";
+  return "master";
 }
 
 function summarizeCraftingItem(item) {
