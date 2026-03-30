@@ -173,6 +173,32 @@ Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   injectV2JournalItemsControl(app, controls);
 });
 
+Hooks.on("getSceneControlButtons", (controls) => {
+  if (!game.settings.get(MODULE_ID, "enabled")) return;
+  if (!canUseModule()) return;
+
+  const notesGroup = Array.isArray(controls) ? controls.find((c) => c?.name === "notes") : null;
+  if (!notesGroup?.tools) return;
+
+  const existing = notesGroup.tools.find((t) => t?.name === "feature-creep-improvise");
+  if (existing) return;
+
+  notesGroup.tools.push({
+    name: "feature-creep-improvise",
+    title: game.i18n.localize(`${MODULE_ID}.button.improvise`),
+    icon: "fas fa-theater-masks",
+    button: true,
+    onClick: () => openImproviseDialog(),
+  });
+});
+
+Hooks.once("ready", () => {
+  const module = game.modules?.get(MODULE_ID);
+  if (module) {
+    module.api = { improvise: openImproviseDialog };
+  }
+});
+
 function injectLegacyHeaderButton(sheet, buttons) {
   if (!game.settings.get(MODULE_ID, "enabled")) return;
   if (!canUseModule()) return;
@@ -1027,6 +1053,289 @@ async function generateShopForCharacter(actor) {
 
     ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.shopFailed`));
   }
+}
+
+async function openImproviseDialog() {
+  try {
+    if (!canUseModule()) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
+      return;
+    }
+
+    const apiKey = game.settings.get(MODULE_ID, "anthropicApiKey")?.trim();
+    if (!apiKey) {
+      ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.apiKeyMissing`));
+      return;
+    }
+
+    const selection = await promptForImproviseSelection();
+    if (!selection) return;
+
+    ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.generatingImprovise`));
+
+    const result = await requestImprovise({ ...selection, apiKey });
+
+    showImproviseResultDialog(result);
+  } catch (error) {
+    console.error(`${MODULE_ID} | improvise failed`, error);
+
+    const message = String(error?.message || "");
+    const isCorsError = error instanceof TypeError && /fetch|failed|cors|network/i.test(message);
+    if (isCorsError) {
+      ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.corsBlocked`));
+      return;
+    }
+
+    ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.improviseFailed`));
+  }
+}
+
+async function promptForImproviseSelection() {
+  const journals = getImproviseCandidateJournals();
+  const actors = getJournalCandidateActors();
+
+  const journalOptions = journals.map((j) => `
+    <label class="feature-creep-improvise-item">
+      <input type="checkbox" name="journalIds" value="${j.id}" />
+      <span>${foundry.utils.escapeHTML(j.name)}</span>
+    </label>
+  `).join("");
+
+  const actorOptions = actors.map((a) => `
+    <label class="feature-creep-improvise-item">
+      <input type="checkbox" name="actorIds" value="${a.id}" />
+      <span>${foundry.utils.escapeHTML(a.name)}</span>
+    </label>
+  `).join("");
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const dialog = new Dialog({
+      title: game.i18n.localize(`${MODULE_ID}.improviseDialog.title`),
+      content: `
+        <form class="feature-creep-improvise-form">
+          <p>${game.i18n.localize(`${MODULE_ID}.improviseDialog.content`)}</p>
+          <div class="form-group stacked">
+            <label for="feature-creep-improvise-situation">${game.i18n.localize(`${MODULE_ID}.improviseDialog.situationLabel`)}</label>
+            <textarea id="feature-creep-improvise-situation" name="situation" rows="4" placeholder="${foundry.utils.escapeHTML(game.i18n.localize(`${MODULE_ID}.improviseDialog.situationPlaceholder`))}"></textarea>
+          </div>
+          ${journals.length > 0 ? `
+          <div class="form-group stacked">
+            <label>${game.i18n.localize(`${MODULE_ID}.improviseDialog.journalsLabel`)}</label>
+            <div class="feature-creep-improvise-list">${journalOptions}</div>
+          </div>
+          ` : ""}
+          ${actors.length > 0 ? `
+          <div class="form-group stacked">
+            <label>${game.i18n.localize(`${MODULE_ID}.improviseDialog.actorsLabel`)}</label>
+            <div class="feature-creep-improvise-list">${actorOptions}</div>
+          </div>
+          ` : ""}
+        </form>
+      `,
+      buttons: {
+        cancel: {
+          label: game.i18n.localize("Cancel"),
+          callback: () => finish(null),
+        },
+        submit: {
+          label: game.i18n.localize(`${MODULE_ID}.improviseDialog.submit`),
+          callback: (html) => {
+            const root = html?.[0];
+            const situation = String(root?.querySelector("[name='situation']")?.value || "").trim();
+            if (!situation) {
+              ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.improviseNoSituation`));
+              finish(null);
+              return;
+            }
+
+            const journalIds = Array.from(root?.querySelectorAll("[name='journalIds']:checked") ?? [])
+              .map((i) => String(i.value || "").trim())
+              .filter(Boolean);
+
+            const actorIds = Array.from(root?.querySelectorAll("[name='actorIds']:checked") ?? [])
+              .map((i) => String(i.value || "").trim())
+              .filter(Boolean);
+
+            const selectedJournals = journalIds.map((id) => game.journal?.get(id)).filter(Boolean);
+            const selectedActors = actorIds.map((id) => game.actors?.get(id)).filter(Boolean);
+
+            finish({ situation, selectedJournals, selectedActors });
+          },
+        },
+      },
+      default: "submit",
+      close: () => finish(null),
+      render: (html) => {
+        html?.[0]?.querySelector("[name='situation']")?.focus();
+      },
+    });
+
+    dialog.render(true);
+  });
+}
+
+function getImproviseCandidateJournals() {
+  return Array.from(game.journal ?? [])
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+}
+
+async function requestImprovise({ situation, selectedJournals, selectedActors, apiKey }) {
+  const systemPrompt = [
+    "You are an experienced D&D5e (2024) Dungeon Master assistant helping a GM improvise a scene.",
+    "Return ONLY valid JSON, no markdown.",
+    "The JSON object must contain these keys: opening (string), npcReactions (array), outcomes (array), mechanics (array), dmTips (string).",
+    "- opening: 2-4 sentence narrative description the DM can read or adapt aloud to set the scene.",
+    "- npcReactions: array of 0-4 objects, each with keys: name (string), reaction (string). Describe how key NPCs or groups might react. Leave as empty array if no specific NPCs are relevant.",
+    "- outcomes: array of 2-4 brief strings describing plausible ways the situation could resolve.",
+    "- mechanics: array of 0-3 brief strings calling out relevant D&D5e mechanics, ability checks, or rules that might apply.",
+    "- dmTips: 1-3 sentence private DM note with behind-the-screen advice on running this scene well.",
+    "Do not include commentary outside the JSON.",
+  ].join("\n");
+
+  const journalSnapshots = selectedJournals
+    .map((j) => getJournalGenerationSnapshot(j))
+    .filter(Boolean);
+
+  const actorSummaries = selectedActors
+    .map((a) => summarizeActorForJournalItems(a))
+    .filter(Boolean);
+
+  const userParts = [
+    `Situation to improvise:\n${situation}`,
+  ];
+
+  if (journalSnapshots.length > 0) {
+    userParts.push(`Relevant journal context:\n${JSON.stringify(journalSnapshots, null, 2)}`);
+  }
+
+  if (actorSummaries.length > 0) {
+    userParts.push(`Involved actors:\n${JSON.stringify(actorSummaries, null, 2)}`);
+  }
+
+  const parsed = await requestAnthropicJson({ systemPrompt, userPrompt: userParts.join("\n\n"), apiKey });
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI response did not parse into an object");
+  }
+
+  const opening = String(parsed.opening ?? "").trim().slice(0, 2000);
+  const npcReactions = Array.isArray(parsed.npcReactions) ? parsed.npcReactions : [];
+  const outcomes = Array.isArray(parsed.outcomes)
+    ? parsed.outcomes.map((s) => String(s || "").trim()).filter(Boolean)
+    : [];
+  const mechanics = Array.isArray(parsed.mechanics)
+    ? parsed.mechanics.map((s) => String(s || "").trim()).filter(Boolean)
+    : [];
+  const dmTips = String(parsed.dmTips ?? "").trim().slice(0, 1000);
+
+  return { opening, npcReactions, outcomes, mechanics, dmTips };
+}
+
+function showImproviseResultDialog(result) {
+  const opening = foundry.utils.escapeHTML(result.opening || "");
+
+  const npcHtml = result.npcReactions.length > 0
+    ? `<ul>${result.npcReactions.map((r) =>
+        `<li><strong>${foundry.utils.escapeHTML(String(r?.name || ""))}</strong>: ${foundry.utils.escapeHTML(String(r?.reaction || ""))}</li>`
+      ).join("")}</ul>`
+    : "";
+
+  const outcomesHtml = result.outcomes.length > 0
+    ? `<ul>${result.outcomes.map((o) => `<li>${foundry.utils.escapeHTML(o)}</li>`).join("")}</ul>`
+    : "";
+
+  const mechanicsHtml = result.mechanics.length > 0
+    ? `<ul>${result.mechanics.map((m) => `<li>${foundry.utils.escapeHTML(m)}</li>`).join("")}</ul>`
+    : "";
+
+  const dmTips = foundry.utils.escapeHTML(result.dmTips || "");
+
+  const content = `
+    <div class="feature-creep-improvise-result">
+      ${opening ? `<div class="feature-creep-improvise-section">
+        <h3>${game.i18n.localize(`${MODULE_ID}.improviseResult.openingLabel`)}</h3>
+        <p class="feature-creep-improvise-opening">${opening}</p>
+      </div>` : ""}
+      ${npcHtml ? `<div class="feature-creep-improvise-section">
+        <h3>${game.i18n.localize(`${MODULE_ID}.improviseResult.npcReactionsLabel`)}</h3>
+        ${npcHtml}
+      </div>` : ""}
+      ${outcomesHtml ? `<div class="feature-creep-improvise-section">
+        <h3>${game.i18n.localize(`${MODULE_ID}.improviseResult.outcomesLabel`)}</h3>
+        ${outcomesHtml}
+      </div>` : ""}
+      ${mechanicsHtml ? `<div class="feature-creep-improvise-section">
+        <h3>${game.i18n.localize(`${MODULE_ID}.improviseResult.mechanicsLabel`)}</h3>
+        ${mechanicsHtml}
+      </div>` : ""}
+      ${dmTips ? `<div class="feature-creep-improvise-section feature-creep-improvise-tips">
+        <h3>${game.i18n.localize(`${MODULE_ID}.improviseResult.dmTipsLabel`)}</h3>
+        <p><em>${dmTips}</em></p>
+      </div>` : ""}
+    </div>
+  `;
+
+  const dialog = new Dialog({
+    title: game.i18n.localize(`${MODULE_ID}.improviseResult.title`),
+    content,
+    buttons: {
+      post: {
+        label: game.i18n.localize(`${MODULE_ID}.improviseResult.postToChat`),
+        callback: () => postImproviseToChat(result),
+      },
+      close: {
+        label: game.i18n.localize("Close"),
+      },
+    },
+    default: "close",
+  });
+
+  dialog.render(true);
+}
+
+async function postImproviseToChat(result) {
+  const lines = [];
+
+  if (result.opening) {
+    lines.push(`<p><strong>${game.i18n.localize(`${MODULE_ID}.improviseResult.openingLabel`)}</strong></p>`);
+    lines.push(`<p>${foundry.utils.escapeHTML(result.opening)}</p>`);
+  }
+
+  if (result.npcReactions.length > 0) {
+    lines.push(`<p><strong>${game.i18n.localize(`${MODULE_ID}.improviseResult.npcReactionsLabel`)}</strong></p>`);
+    lines.push(`<ul>${result.npcReactions.map((r) =>
+      `<li><strong>${foundry.utils.escapeHTML(String(r?.name || ""))}</strong>: ${foundry.utils.escapeHTML(String(r?.reaction || ""))}</li>`
+    ).join("")}</ul>`);
+  }
+
+  if (result.outcomes.length > 0) {
+    lines.push(`<p><strong>${game.i18n.localize(`${MODULE_ID}.improviseResult.outcomesLabel`)}</strong></p>`);
+    lines.push(`<ul>${result.outcomes.map((o) => `<li>${foundry.utils.escapeHTML(o)}</li>`).join("")}</ul>`);
+  }
+
+  if (result.mechanics.length > 0) {
+    lines.push(`<p><strong>${game.i18n.localize(`${MODULE_ID}.improviseResult.mechanicsLabel`)}</strong></p>`);
+    lines.push(`<ul>${result.mechanics.map((m) => `<li>${foundry.utils.escapeHTML(m)}</li>`).join("")}</ul>`);
+  }
+
+  if (result.dmTips) {
+    lines.push(`<p><strong>${game.i18n.localize(`${MODULE_ID}.improviseResult.dmTipsLabel`)}</strong></p>`);
+    lines.push(`<p><em>${foundry.utils.escapeHTML(result.dmTips)}</em></p>`);
+  }
+
+  await ChatMessage.create({
+    content: lines.join("\n"),
+    whisper: ChatMessage.getWhisperRecipients("GM"),
+  });
+
+  ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.improvisePostedToChat`));
 }
 
 async function promptForJournalActorSelection() {
