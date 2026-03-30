@@ -1464,65 +1464,6 @@ function toActivityMap(activities) {
   return map;
 }
 
-async function applyEffects(item, effects) {
-  return applyEffectsImpl(item, effects);
-}
-
-async function applyItemMacro(item, itemMacro) {
-  return applyItemMacroImpl(item, itemMacro);
-}
-
-async function applyFameosityPricingToMerchant(npcActor, merchantData) {
-  return applyFameosityPricingToMerchantImpl(npcActor, merchantData);
-}
-
-function getFameosityApi() {
-  return getFameosityApiImpl();
-}
-
-function getFameosityPlayerCharacters(fameosityApi) {
-  return getFameosityPlayerCharactersImpl(fameosityApi);
-}
-
-function getFameosityNpcTendency(fameosityApi, npcId) {
-  return getFameosityNpcTendencyImpl(fameosityApi, npcId);
-}
-
-function getFameosityNpcRelationToPc(fameosityApi, npcId, pcId) {
-  return getFameosityNpcRelationToPcImpl(fameosityApi, npcId, pcId);
-}
-
-function clampReputationScore(value) {
-  return clampReputationScoreImpl(value);
-}
-
-function getShopPricingConfig() {
-  return getShopPricingConfigImpl();
-}
-
-function computeWeightedReputationScore(relation, tendency, config) {
-  return computeWeightedReputationScoreImpl(relation, tendency, config);
-}
-
-function computeReputationPriceModifiers(baseBuy, baseSell, reputationScore, config = {}) {
-  return computeReputationPriceModifiersImpl(baseBuy, baseSell, reputationScore, config);
-}
-
-function roundPriceModifier(value, fallback) {
-  return roundPriceModifierImpl(value, fallback);
-}
-
-function normalizeMerchantPriceSpread(buyPriceModifier, sellPriceModifier) {
-  return normalizeMerchantPriceSpreadImpl(buyPriceModifier, sellPriceModifier);
-}
-
-async function applyIntegrationFlags(item, integrationFlags) {
-  return applyIntegrationFlagsImpl(item, integrationFlags);
-}
-
-async function normalizeMacroIntegration(item) {
-  return normalizeMacroIntegrationImpl(item);
-}
 
 function htmlToText(html) {
   const element = document.createElement("div");
