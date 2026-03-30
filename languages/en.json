@@ -145,5 +145,10 @@
   "feature-creep.improviseResult.outcomesLabel": "Possible Outcomes",
   "feature-creep.improviseResult.mechanicsLabel": "Relevant Mechanics",
   "feature-creep.improviseResult.dmTipsLabel": "DM Tips",
-  "feature-creep.improviseResult.postToChat": "Post to GM Chat"
+  "feature-creep.improviseResult.postToChat": "Post to GM Chat",
+  "feature-creep.improviseResult.saveToJournal": "Save to Journal",
+  "feature-creep.improviseResult.promptLabel": "Original Prompt",
+  "feature-creep.improviseResult.journalPageTitle": "Improv Result",
+  "feature-creep.notifications.improviseSavedToJournal": "Improv result saved to journal: {name}",
+  "feature-creep.notifications.noJournalSelected": "No journal selected to save improv result."
 }

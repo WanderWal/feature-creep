@@ -894,7 +894,11 @@ async function openImproviseDialog() {
 
     const result = await requestImprovise({ ...selection, apiKey });
 
-    showImproviseResultDialog(result);
+    // Pass prompt and selectedJournals to result dialog for journal saving
+    showImproviseResultDialog(result, {
+      prompt: selection.situation,
+      selectedJournals: selection.selectedJournals,
+    });
   } catch (error) {
     console.error(`${MODULE_ID} | improvise failed`, error);
     notifyAiRequestFailure({

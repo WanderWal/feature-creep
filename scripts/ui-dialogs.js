@@ -51,7 +51,15 @@ export function createUiDialogs({ moduleId, helpers, actions }) {
     </table>`;
   }
 
-  function showImproviseResultDialog(result) {
+  /**
+   * Show the improvise result dialog, with option to save to a selected journal.
+   * @param {object} result - The improvise result object.
+   * @param {object} [options] - Extra options.
+   * @param {string} [options.prompt] - The original prompt/situation text.
+   * @param {Array} [options.selectedJournals] - Array of selected JournalEntry objects.
+   */
+  function showImproviseResultDialog(result, options = {}) {
+    const { prompt = "", selectedJournals = [] } = options;
     const opening = foundry.utils.escapeHTML(result.opening || "");
 
     const npcHtml = result.npcReactions.length > 0
@@ -102,6 +110,27 @@ export function createUiDialogs({ moduleId, helpers, actions }) {
         post: {
           label: game.i18n.localize(`${moduleId}.improviseResult.postToChat`),
           callback: () => postImproviseToChat(result),
+        },
+        save: {
+          label: game.i18n.localize(`${moduleId}.improviseResult.saveToJournal`),
+          callback: async () => {
+            if (!selectedJournals.length) {
+              ui.notifications.warn(game.i18n.localize(`${moduleId}.notifications.noJournalSelected`));
+              return;
+            }
+            const journal = selectedJournals[0];
+            const pageName = game.i18n.localize(`${moduleId}.improviseResult.journalPageTitle`) + ` (${new Date().toLocaleString()})`;
+            let html = `<h2>${game.i18n.localize(`${moduleId}.improviseResult.promptLabel`)}</h2>`;
+            html += `<p>${foundry.utils.escapeHTML(prompt)}</p>`;
+            html += `<hr/>`;
+            html += content;
+            await journal.createEmbeddedDocuments("JournalEntryPage", [{
+              name: pageName,
+              type: "text",
+              text: { content: html, format: CONST.JOURNAL_ENTRY_PAGE_FORMATS.HTML },
+            }]);
+            ui.notifications.info(game.i18n.format(`${moduleId}.notifications.improviseSavedToJournal`, { name: journal.name }));
+          },
         },
         close: {
           label: game.i18n.localize("Close"),
