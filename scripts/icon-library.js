@@ -45,6 +45,10 @@ function normalizeScoreToken(token) {
   return token.endsWith("s") && token.length > 3 ? token.slice(0, -1) : token;
 }
 
+function tokenizeQuery(value) {
+  return tokenize(value).map((token) => normalizeScoreToken(token));
+}
+
 function getParentFolder(path) {
   const normalized = String(path || "");
   const split = normalized.split("/");
@@ -331,6 +335,27 @@ export function createIconIndexAgent({ moduleId }) {
     return score;
   }
 
+  function scoreEntryForQuery(entry, itemType, queryTokens) {
+    const typeHints = Array.isArray(TYPE_HINTS[itemType]) ? TYPE_HINTS[itemType] : [];
+    const entryTokens = Array.isArray(entry.tokens) ? entry.tokens : [];
+    const label = String(entry.label || "").toLowerCase();
+    const path = String(entry.path || "").toLowerCase();
+
+    let score = 0;
+
+    for (const queryToken of queryTokens) {
+      if (!queryToken) continue;
+      if (entryTokens.includes(queryToken)) score += 4;
+      else if (label.includes(queryToken) || path.includes(queryToken)) score += 2;
+    }
+
+    for (const hint of typeHints) {
+      if (label.includes(hint) || path.includes(hint)) score += 1;
+    }
+
+    return score;
+  }
+
   async function getBestIconForItem(item, normalizedType) {
     const requested = toFilePath(item?.img);
     const catalog = await ensureIconCatalog();
@@ -391,6 +416,28 @@ export function createIconIndexAgent({ moduleId }) {
     return getBestIconForItemFromCache(item, normalizedType);
   }
 
+  async function searchIconIndex({ query, itemType, limit }) {
+    const catalog = await ensureIconCatalog();
+    const maxResults = Math.max(1, Math.min(25, Math.round(Number(limit) || 10)));
+    const queryTokens = tokenizeQuery(query);
+    const type = String(itemType || "").trim().toLowerCase();
+
+    const scored = (Array.isArray(catalog.entries) ? catalog.entries : [])
+      .map((entry) => ({
+        path: entry.path,
+        label: entry.label,
+        score: scoreEntryForQuery(entry, type, queryTokens),
+      }))
+      .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+
+    return {
+      query: String(query || "").trim(),
+      itemType: type || null,
+      indexedAt: Number(catalog.indexedAt) || 0,
+      results: scored.slice(0, maxResults),
+    };
+  }
+
   function getMemorySnapshot() {
     return getCachedCatalog();
   }
@@ -405,6 +452,7 @@ export function createIconIndexAgent({ moduleId }) {
     getBestIconForItem,
     getBestIconForItemFromCache,
     askForBestIcon,
+    searchIconIndex,
   };
 }
 

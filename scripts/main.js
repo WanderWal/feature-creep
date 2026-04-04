@@ -55,7 +55,6 @@ const aiRequests = createAiRequests({
     parseChallengeRating: aiHelpers.parseChallengeRating,
     normalizeCrGuessConfidence: aiHelpers.normalizeCrGuessConfidence,
     enhancePayloadForKnownPatterns: aiHelpers.enhancePayloadForKnownPatterns,
-    getIconPromptContext: iconIndexAgent.getIconPromptContext,
   },
 });
 
@@ -65,7 +64,7 @@ const anthropicOrchestrator = createAnthropicOrchestrator({
   helpers: {
     getCraftingGenerationSnapshot: aiHelpers.getCraftingGenerationSnapshot,
     getLootGenerationSnapshot: aiHelpers.getLootGenerationSnapshot,
-    getIconPromptContext: iconIndexAgent.getIconPromptContext,
+    searchIconIndex: iconIndexAgent.searchIconIndex,
   },
 });
 

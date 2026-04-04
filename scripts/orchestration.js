@@ -50,7 +50,7 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
   const {
     getCraftingGenerationSnapshot,
     getLootGenerationSnapshot,
-    getIconPromptContext,
+    searchIconIndex,
   } = helpers;
 
   function getOrchestrationConfig() {
@@ -63,7 +63,7 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
     };
   }
 
-  async function callStage({ role, systemPrompt, userPrompt, apiKey, budgetState, config }) {
+  async function callStage({ role, systemPrompt, userPrompt, apiKey, budgetState, config, tools, localToolHandler, maxToolRounds }) {
     if (budgetState.calls >= config.maxCalls) {
       throw createBudgetError(`AI orchestration call cap reached (${config.maxCalls})`);
     }
@@ -86,6 +86,9 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
       roleModelKey: buildRoleModelKey(role),
       maxTokens: requestedMaxTokens,
       timeoutMs: config.timeoutSeconds * 1000,
+      tools,
+      localToolHandler,
+      maxToolRounds,
     });
   }
 
@@ -126,25 +129,53 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
     return { systemPrompt, userPrompt };
   }
 
-  function buildIconPrompts(kind, items, iconContext) {
+  function buildIconPrompts(kind, items) {
     const key = kind === "loot" ? "loot" : "items";
     const systemPrompt = [
       "You are an icon assignment specialist for Foundry VTT items.",
       "Return ONLY valid JSON, no markdown.",
       `The JSON must contain: ${key} (array).`,
       "Each array entry must include: name (string), img (string).",
-      "img MUST be selected only from iconOptions.path values provided by the user.",
+      "Use the search_icon_index tool to find candidate icon paths for each item.",
+      "img MUST be selected from paths returned by the search_icon_index tool.",
       "Assign one best-fit icon per item name.",
     ].join("\n");
 
     const userPrompt = [
       "Assign icons for these generated items:",
       JSON.stringify(items, null, 2),
-      "Available icon memory context:",
-      JSON.stringify(iconContext, null, 2),
+      "For each item, call search_icon_index with query=<item name> and itemType=<item type> before selecting img.",
     ].join("\n\n");
 
     return { systemPrompt, userPrompt };
+  }
+
+  function buildIconTools() {
+    return [{
+      name: "search_icon_index",
+      description: "Searches persistent icon index memory and returns best icon path candidates.",
+      input_schema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          itemType: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["query"],
+      },
+    }];
+  }
+
+  async function handleIconToolCall({ name, input }) {
+    if (name !== "search_icon_index") {
+      throw new Error(`Unknown icon tool: ${name}`);
+    }
+
+    return searchIconIndex({
+      query: String(input?.query || "").trim(),
+      itemType: String(input?.itemType || "").trim(),
+      limit: Number(input?.limit) || 10,
+    });
   }
 
   function buildFinalizerPrompts(kind, snapshot, itemsWithIcons, rationale) {
@@ -174,7 +205,6 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
 
     const budgetState = { calls: 0, estimatedTokens: 0 };
     const snapshot = getLootGenerationSnapshot(actor);
-    const iconContext = await getIconPromptContext();
     const normalizedNotes = normalizeText(notes).slice(0, 1200);
 
     const plannerPrompts = buildLootPlannerPrompts(snapshot, normalizedNotes);
@@ -192,7 +222,7 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
 
     let iconLoot = plannerLoot;
     try {
-      const iconPrompts = buildIconPrompts("loot", plannerLoot, iconContext);
+      const iconPrompts = buildIconPrompts("loot", plannerLoot);
       const iconResult = await callStage({
         role: "icon",
         systemPrompt: iconPrompts.systemPrompt,
@@ -200,6 +230,9 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
         apiKey,
         budgetState,
         config,
+        tools: buildIconTools(),
+        localToolHandler: handleIconToolCall,
+        maxToolRounds: 8,
       });
       iconLoot = mergeIconAssignments(plannerLoot, normalizeItemsArray(iconResult, "loot"));
     } catch (error) {
@@ -247,7 +280,6 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
 
     const budgetState = { calls: 0, estimatedTokens: 0 };
     const snapshot = getCraftingGenerationSnapshot(artisanTool, toolProficiencyProfile, ingredientResources, notes);
-    const iconContext = await getIconPromptContext();
 
     const plannerPrompts = buildCraftPlannerPrompts(snapshot);
     const planner = await callStage({
@@ -264,7 +296,7 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
 
     let iconItems = plannerItems;
     try {
-      const iconPrompts = buildIconPrompts("items", plannerItems, iconContext);
+      const iconPrompts = buildIconPrompts("items", plannerItems);
       const iconResult = await callStage({
         role: "icon",
         systemPrompt: iconPrompts.systemPrompt,
@@ -272,6 +304,9 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
         apiKey,
         budgetState,
         config,
+        tools: buildIconTools(),
+        localToolHandler: handleIconToolCall,
+        maxToolRounds: 8,
       });
       iconItems = mergeIconAssignments(plannerItems, normalizeItemsArray(iconResult, "items"));
     } catch (error) {

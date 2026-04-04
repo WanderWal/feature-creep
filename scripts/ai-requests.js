@@ -14,7 +14,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
     parseChallengeRating,
     normalizeCrGuessConfidence,
     enhancePayloadForKnownPatterns,
-    getIconPromptContext,
   } = helpers;
 
   async function requestImprovise({ situation, selectedJournals, selectedActors, apiKey }) {
@@ -120,9 +119,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
 
   async function requestCraftedItems({ artisanTool, toolProficiencyProfile, ingredientResources, notes, apiKey }) {
     const recipeIntegrationActive = isBeaversCraftingIntegrationAvailable();
-    const iconPromptContext = typeof getIconPromptContext === "function"
-      ? await getIconPromptContext()
-      : { enabled: false, iconOptions: [] };
 
     const systemPrompt = [
       "You are a D&D5e (2024) crafting assistant for Foundry VTT used by a DM to build a crafting system.",
@@ -130,9 +126,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
       "The JSON object must contain these keys: items (array), rationale (string).",
       "- items: array of 0-4 crafted output items.",
       "- Each output item must have: name (string), type (one of: material|loot|weapon|equipment|consumable|tool|container|treasure), quantity (number >= 1), craftingDc (number), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
-      iconPromptContext.enabled
-        ? "- If iconOptions are provided, include img (string) on each item and choose it ONLY from iconOptions.path values."
-        : "",
       "- The output items must plausibly be crafted using the selected tool and the provided ingredient resources with quantities.",
       "- If the selected tool and provided resources cannot plausibly produce a meaningful craft result, return items as an empty array.",
       "- Prefer transforming, refining, combining, or improving the provided ingredients rather than inventing unrelated treasure.",
@@ -158,9 +151,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
       "Generate crafted output items based on selected tool, tool proficiency profile, selected ingredient resources, and optional notes.",
       "Crafting snapshot:",
       JSON.stringify(getCraftingGenerationSnapshot(artisanTool, toolProficiencyProfile, ingredientResources, notes), null, 2),
-      iconPromptContext.enabled
-        ? `Available icon paths (choose best-match img per item):\n${JSON.stringify(iconPromptContext, null, 2)}`
-        : "",
     ].join("\n\n");
 
     const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
@@ -177,9 +167,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
 
   async function requestMonsterLoot({ actor, notes, apiKey }) {
     const normalizedNotes = String(notes ?? "").trim().slice(0, 1200);
-    const iconPromptContext = typeof getIconPromptContext === "function"
-      ? await getIconPromptContext()
-      : { enabled: false, iconOptions: [] };
 
     const systemPrompt = [
       "You are a D&D5e (2024) Dungeon Master assistant helping create creature loot tables.",
@@ -187,9 +174,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
       "The JSON object must contain these keys: loot (array), rationale (string).",
       "- loot: array of 3-6 items the creature might drop when defeated.",
       "- Each loot item must have: name (string), type (one of: material|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number) and denomination (one of: cp|sp|ep|gp|pp)).",
-      iconPromptContext.enabled
-        ? "- If iconOptions are provided, include img (string) on each loot item and choose it ONLY from iconOptions.path values."
-        : "",
       "- Do NOT include any item whose name matches an item in the creature's existingInventory.",
       "- If optional GM notes are provided, use them as high-priority guidance while still keeping loot plausible for the creature.",
       "- rationale: brief 1-2 sentence explanation of why these items fit this creature.",
@@ -208,10 +192,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
       userParts.push(`GM notes for this roll:\n${normalizedNotes}`);
     }
 
-    if (iconPromptContext.enabled) {
-      userParts.push(`Available icon paths (choose best-match img per loot item):\n${JSON.stringify(iconPromptContext, null, 2)}`);
-    }
-
     const userPrompt = userParts.join("\n\n");
 
     const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
@@ -227,19 +207,12 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
   }
 
   async function requestJournalItems({ snapshot, actorSnapshot, apiKey }) {
-    const iconPromptContext = typeof getIconPromptContext === "function"
-      ? await getIconPromptContext()
-      : { enabled: false, iconOptions: [] };
-
     const systemPrompt = [
       "You are a D&D5e (2024) Dungeon Master assistant helping generate location-based items from journal notes.",
       "Return ONLY valid JSON, no markdown.",
       "The JSON object must contain these keys: items (array), rationale (string).",
       "- items: array of 3-8 items inspired by the journal's location and details.",
       "- Each item must have: name (string), type (one of: material|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number >= 0) and denomination (one of: cp|sp|ep|gp|pp)).",
-      iconPromptContext.enabled
-        ? "- If iconOptions are provided, include img (string) on each item and choose it ONLY from iconOptions.path values."
-        : "",
       "- Items should be practical, discoverable, gathered or uncovered in/near this location (loot, supplies, clues, relics, tools, etc).",
       "- If actorContext is provided, tailor at least some items to that actor's class, proficiencies, and likely needs while still fitting the location.",
       "- Avoid overpowered legendary items unless the journal clearly supports it.",
@@ -253,9 +226,6 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
       actorSnapshot
         ? `Actor context (the actor searching this location):\n${JSON.stringify(actorSnapshot, null, 2)}`
         : "Actor context: none provided.",
-      iconPromptContext.enabled
-        ? `Available icon paths (choose best-match img per item):\n${JSON.stringify(iconPromptContext, null, 2)}`
-        : "",
     ].join("\n\n");
 
     const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
