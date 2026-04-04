@@ -131,6 +131,82 @@ export function registerModuleSettings(moduleId) {
     default: 0.6,
   });
 
+  game.settings.register(moduleId, "anthropicOrchestrationEnabled", {
+    name: `${moduleId}.settings.anthropicOrchestrationEnabled.name`,
+    hint: `${moduleId}.settings.anthropicOrchestrationEnabled.hint`,
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+  });
+
+  game.settings.register(moduleId, "anthropicOrchestrationMaxCalls", {
+    name: `${moduleId}.settings.anthropicOrchestrationMaxCalls.name`,
+    hint: `${moduleId}.settings.anthropicOrchestrationMaxCalls.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 2, max: 6, step: 1 },
+    default: 3,
+  });
+
+  game.settings.register(moduleId, "anthropicOrchestrationPerCallTokenCap", {
+    name: `${moduleId}.settings.anthropicOrchestrationPerCallTokenCap.name`,
+    hint: `${moduleId}.settings.anthropicOrchestrationPerCallTokenCap.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 500, max: 16000, step: 100 },
+    default: 2500,
+  });
+
+  game.settings.register(moduleId, "anthropicOrchestrationTotalTokenCap", {
+    name: `${moduleId}.settings.anthropicOrchestrationTotalTokenCap.name`,
+    hint: `${moduleId}.settings.anthropicOrchestrationTotalTokenCap.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 1500, max: 32000, step: 100 },
+    default: 7000,
+  });
+
+  game.settings.register(moduleId, "anthropicOrchestrationTimeoutSeconds", {
+    name: `${moduleId}.settings.anthropicOrchestrationTimeoutSeconds.name`,
+    hint: `${moduleId}.settings.anthropicOrchestrationTimeoutSeconds.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 10, max: 300, step: 5 },
+    default: 60,
+  });
+
+  game.settings.register(moduleId, "anthropicPlannerModel", {
+    name: `${moduleId}.settings.anthropicPlannerModel.name`,
+    hint: `${moduleId}.settings.anthropicPlannerModel.hint`,
+    scope: "world",
+    config: true,
+    type: String,
+    default: "",
+  });
+
+  game.settings.register(moduleId, "anthropicIconModel", {
+    name: `${moduleId}.settings.anthropicIconModel.name`,
+    hint: `${moduleId}.settings.anthropicIconModel.hint`,
+    scope: "world",
+    config: true,
+    type: String,
+    default: "",
+  });
+
+  game.settings.register(moduleId, "anthropicFinalizerModel", {
+    name: `${moduleId}.settings.anthropicFinalizerModel.name`,
+    hint: `${moduleId}.settings.anthropicFinalizerModel.hint`,
+    scope: "world",
+    config: true,
+    type: String,
+    default: "",
+  });
+
   game.settings.register(moduleId, "generatedIconSource", {
     name: `${moduleId}.settings.generatedIconSource.name`,
     hint: `${moduleId}.settings.generatedIconSource.hint`,
@@ -180,10 +256,23 @@ export function registerModuleSettings(moduleId) {
     config: false,
     type: Object,
     default: {
+      version: 2,
       source: "public",
       rootFolder: "",
       indexedAt: 0,
       entries: [],
+      folderMemory: [],
     },
+  });
+}
+
+export function registerIconIndexAgentMenu(moduleId, menuType) {
+  game.settings.registerMenu(moduleId, "iconIndexAgent", {
+    name: `${moduleId}.iconAgent.menuName`,
+    hint: `${moduleId}.iconAgent.menuHint`,
+    label: `${moduleId}.iconAgent.menuLabel`,
+    icon: "fas fa-folder-tree",
+    restricted: true,
+    type: menuType,
   });
 }

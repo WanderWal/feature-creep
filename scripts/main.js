@@ -1,4 +1,4 @@
-import { registerModuleSettings } from "./settings.js";
+import { registerModuleSettings, registerIconIndexAgentMenu } from "./settings.js";
 import { createAnthropicJsonRequester } from "./anthropic-client.js";
 import { notifyAiRequestFailure } from "./ai-error-handler.js";
 import { createAiHelpers } from "./ai-helpers.js";
@@ -8,7 +8,9 @@ import { createFameosityPricing } from "./fameosity-pricing.js";
 import { createApplyActions } from "./apply-actions.js";
 import { createUiDialogs } from "./ui-dialogs.js";
 import { createUiPrompts } from "./ui-prompts.js";
-import { createIconLibrary } from "./icon-library.js";
+import { createIconIndexAgent } from "./icon-library.js";
+import { createIconIndexAgentMenuClass } from "./icon-index-menu.js";
+import { createAnthropicOrchestrator } from "./orchestration.js";
 import {
   canUseModule,
   isDnd5eItemSheet,
@@ -19,11 +21,12 @@ import {
 
 const MODULE_ID = "feature-creep";
 const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
+const ACTIVE_GENERATION_LOCKS = new Set();
 const requestAnthropicJson = createAnthropicJsonRequester({
   moduleId: MODULE_ID,
   defaultEndpoint: ANTHROPIC_ENDPOINT,
 });
-const iconLibrary = createIconLibrary({
+const iconIndexAgent = createIconIndexAgent({
   moduleId: MODULE_ID,
 });
 const aiHelpers = createAiHelpers({
@@ -52,8 +55,23 @@ const aiRequests = createAiRequests({
     parseChallengeRating: aiHelpers.parseChallengeRating,
     normalizeCrGuessConfidence: aiHelpers.normalizeCrGuessConfidence,
     enhancePayloadForKnownPatterns: aiHelpers.enhancePayloadForKnownPatterns,
-    getIconPromptContext: iconLibrary.getIconPromptContext,
+    getIconPromptContext: iconIndexAgent.getIconPromptContext,
   },
+});
+
+const anthropicOrchestrator = createAnthropicOrchestrator({
+  moduleId: MODULE_ID,
+  requestAnthropicJson,
+  helpers: {
+    getCraftingGenerationSnapshot: aiHelpers.getCraftingGenerationSnapshot,
+    getLootGenerationSnapshot: aiHelpers.getLootGenerationSnapshot,
+    getIconPromptContext: iconIndexAgent.getIconPromptContext,
+  },
+});
+
+const IconIndexAgentMenu = createIconIndexAgentMenuClass({
+  moduleId: MODULE_ID,
+  iconIndexAgent,
 });
 
 const requestImproviseImpl = aiRequests.requestImprovise;
@@ -64,6 +82,8 @@ const requestJournalItemsImpl = aiRequests.requestJournalItems;
 const requestAnthropicGenerationImpl = aiRequests.requestAnthropicGeneration;
 const requestMonsterRebalanceImpl = aiRequests.requestMonsterRebalance;
 const requestMonsterCrGuessImpl = aiRequests.requestMonsterCrGuess;
+const orchestrateLootGenerationImpl = anthropicOrchestrator.orchestrateLootGeneration;
+const orchestrateCraftGenerationImpl = anthropicOrchestrator.orchestrateCraftGeneration;
 
 const summarizeActorForJournalItemsImpl = aiHelpers.summarizeActorForJournalItems;
 const getCharacterShopGenerationSnapshotImpl = aiHelpers.getCharacterShopGenerationSnapshot;
@@ -192,6 +212,7 @@ const promptForJournalActorSelectionImpl = uiPrompts.promptForJournalActorSelect
 
 Hooks.once("init", () => {
   registerModuleSettings(MODULE_ID);
+  registerIconIndexAgentMenu(MODULE_ID, IconIndexAgentMenu);
 });
 
 Hooks.on("getItemSheetHeaderButtons", (sheet, buttons) => {
@@ -254,16 +275,15 @@ Hooks.on("getSceneControlButtons", (controls) => {
 Hooks.once("ready", () => {
   const module = game.modules?.get(MODULE_ID);
   if (module) {
-    module.api = { improvise: openImproviseDialog };
+    module.api = {
+      improvise: openImproviseDialog,
+      iconIndexAgent: {
+        indexNow: () => iconIndexAgent.indexAllIcons(),
+        getMemory: () => iconIndexAgent.getMemorySnapshot(),
+        getBestIcon: (item, type) => iconIndexAgent.askForBestIcon(item, type),
+      },
+    };
   }
-
-  void iconLibrary.ensureIconCatalog();
-});
-
-Hooks.on("updateSetting", (setting) => {
-  const key = String(setting?.key || "");
-  if (!key.startsWith(`${MODULE_ID}.generatedIcon`)) return;
-  void iconLibrary.rebuildIconCatalog();
 });
 
 function injectLegacyHeaderButton(sheet, buttons) {
@@ -713,6 +733,14 @@ async function guessMonsterCr(actor) {
 }
 
 async function generateCraftedItemsForActor(actor) {
+  const lockKey = `craft:${actor?.id || "unknown"}`;
+  if (ACTIVE_GENERATION_LOCKS.has(lockKey)) {
+    ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.operationInProgress`));
+    return;
+  }
+
+  ACTIVE_GENERATION_LOCKS.add(lockKey);
+
   try {
     if (!canUseModule()) {
       ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
@@ -732,8 +760,6 @@ async function generateCraftedItemsForActor(actor) {
       tool: selection.artisanTool.name,
     }));
 
-    await iconLibrary.ensureIconCatalog();
-
     const result = await requestCraftedItems({
       artisanTool: selection.artisanTool,
       toolProficiencyProfile: getToolProficiencyProfile(actor, selection.artisanTool),
@@ -750,6 +776,8 @@ async function generateCraftedItemsForActor(actor) {
       error,
       fallbackNotificationKey: `${MODULE_ID}.notifications.craftFailed`,
     });
+  } finally {
+    ACTIVE_GENERATION_LOCKS.delete(lockKey);
   }
 }
 
@@ -762,6 +790,14 @@ async function promptForLootNotes(actor) {
 }
 
 async function generateLootForActor(actor) {
+  const lockKey = `loot:${actor?.id || "unknown"}`;
+  if (ACTIVE_GENERATION_LOCKS.has(lockKey)) {
+    ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.operationInProgress`));
+    return;
+  }
+
+  ACTIVE_GENERATION_LOCKS.add(lockKey);
+
   try {
     if (!canUseModule()) {
       ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.gmOnly`));
@@ -781,8 +817,6 @@ async function generateLootForActor(actor) {
       name: actor.name,
     }));
 
-    await iconLibrary.ensureIconCatalog();
-
     const result = await requestMonsterLoot({ actor, notes: lootNotes, apiKey });
 
     showLootGenerationDialog(actor, result);
@@ -793,6 +827,8 @@ async function generateLootForActor(actor) {
       error,
       fallbackNotificationKey: `${MODULE_ID}.notifications.lootFailed`,
     });
+  } finally {
+    ACTIVE_GENERATION_LOCKS.delete(lockKey);
   }
 }
 
@@ -823,8 +859,6 @@ async function generateItemsFromJournal(sourceDocument) {
     ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingJournalItems`, {
       name: snapshot.name,
     }));
-
-    await iconLibrary.ensureIconCatalog();
 
     const result = await requestJournalItems({ snapshot, actorSnapshot, apiKey });
 
@@ -1024,6 +1058,24 @@ function isItemPilesShopIntegrationAvailable() {
 }
 
 async function requestCraftedItems({ artisanTool, toolProficiencyProfile, ingredientResources, notes, apiKey }) {
+  if (game.settings.get(MODULE_ID, "anthropicOrchestrationEnabled")) {
+    try {
+      const orchestrated = await orchestrateCraftGenerationImpl({
+        artisanTool,
+        toolProficiencyProfile,
+        ingredientResources,
+        notes,
+        apiKey,
+      });
+
+      if (orchestrated && typeof orchestrated === "object") {
+        return orchestrated;
+      }
+    } catch (error) {
+      console.warn(`${MODULE_ID} | craft orchestration fallback to legacy`, error);
+    }
+  }
+
   return requestCraftedItemsImpl({ artisanTool, toolProficiencyProfile, ingredientResources, notes, apiKey });
 }
 
@@ -1067,6 +1119,17 @@ function summarizeCraftingItem(item) {
 }
 
 async function requestMonsterLoot({ actor, notes, apiKey }) {
+  if (game.settings.get(MODULE_ID, "anthropicOrchestrationEnabled")) {
+    try {
+      const orchestrated = await orchestrateLootGenerationImpl({ actor, notes, apiKey });
+      if (orchestrated && typeof orchestrated === "object") {
+        return orchestrated;
+      }
+    } catch (error) {
+      console.warn(`${MODULE_ID} | loot orchestration fallback to legacy`, error);
+    }
+  }
+
   return requestMonsterLootImpl({ actor, notes, apiKey });
 }
 
@@ -1360,7 +1423,7 @@ function sanitizeGeneratedInventoryItems(items, options = {}) {
         normalized.craftingDc = Math.max(5, Math.min(30, Math.round(Number(item.craftingDc) || 10)));
       }
 
-      normalized.img = iconLibrary.getBestIconForItemFromCache(item, normalized.type);
+      normalized.img = iconIndexAgent.getBestIconForItemFromCache(item, normalized.type);
 
       return normalized;
     });

@@ -1,0 +1,66 @@
+<form class="feature-creep-icon-agent-form" autocomplete="off">
+  <div class="form-group">
+    <label>{{localize "feature-creep.settings.generatedIconSource.name"}}</label>
+    <select name="source">
+      <option value="public" {{#if sourcePublic}}selected{{/if}}>Public</option>
+      <option value="data" {{#if sourceData}}selected{{/if}}>Data</option>
+      <option value="s3" {{#if sourceS3}}selected{{/if}}>S3</option>
+    </select>
+  </div>
+
+  <div class="form-group">
+    <label>{{localize "feature-creep.settings.generatedIconFolder.name"}}</label>
+    <div class="form-fields">
+      <input type="text" name="folder" value="{{folder}}" placeholder="icons" />
+    </div>
+    <p class="notes">{{localize "feature-creep.settings.generatedIconFolder.hint"}}</p>
+  </div>
+
+  <div class="form-group">
+    <label>{{localize "feature-creep.settings.generatedIconMaxEntries.name"}}</label>
+    <div class="form-fields">
+      <input type="number" name="maxEntries" value="{{maxEntries}}" min="50" max="3000" step="50" />
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>{{localize "feature-creep.settings.generatedIconPromptLimit.name"}}</label>
+    <div class="form-fields">
+      <input type="number" name="promptLimit" value="{{promptLimit}}" min="20" max="200" step="10" />
+    </div>
+  </div>
+
+  <hr />
+
+  <div class="form-group">
+    <label>{{localize "feature-creep.iconAgent.lastIndexed"}}</label>
+    <div class="form-fields">
+      <span>{{indexedAtLabel}}</span>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>{{localize "feature-creep.iconAgent.indexedIcons"}}</label>
+    <div class="form-fields">
+      <span>{{indexedCount}}</span>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>{{localize "feature-creep.iconAgent.indexedFolders"}}</label>
+    <div class="form-fields">
+      <span>{{folderCount}}</span>
+    </div>
+  </div>
+
+  <footer class="sheet-footer flexrow">
+    <button type="button" class="feature-creep-icon-agent-index">
+      <i class="fas fa-folder-tree"></i>
+      {{localize "feature-creep.iconAgent.indexNow"}}
+    </button>
+    <button type="button" class="feature-creep-icon-agent-clear">
+      <i class="fas fa-trash"></i>
+      {{localize "feature-creep.iconAgent.clearMemory"}}
+    </button>
+  </footer>
+</form>

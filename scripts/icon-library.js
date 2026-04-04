@@ -45,7 +45,76 @@ function normalizeScoreToken(token) {
   return token.endsWith("s") && token.length > 3 ? token.slice(0, -1) : token;
 }
 
-export function createIconLibrary({ moduleId }) {
+function getParentFolder(path) {
+  const normalized = String(path || "");
+  const split = normalized.split("/");
+  split.pop();
+  return split.join("/");
+}
+
+function buildFolderMemory(paths, rootFolder) {
+  const grouped = new Map();
+
+  for (const path of paths) {
+    const folder = getParentFolder(path);
+    if (!grouped.has(folder)) grouped.set(folder, []);
+    grouped.get(folder).push(path);
+  }
+
+  const records = [];
+  for (const [folder, files] of grouped.entries()) {
+    const folderTail = folder.replace(`${rootFolder}/`, "");
+    const tokenSet = new Set(tokenize(folderTail));
+
+    records.push({
+      folder,
+      relativeFolder: folderTail,
+      count: files.length,
+      folderTokens: Array.from(tokenSet).slice(0, 16),
+      samplePaths: files.slice(0, 5),
+    });
+  }
+
+  records.sort((left, right) => right.count - left.count || left.folder.localeCompare(right.folder));
+  return records;
+}
+
+function pickBalancedPaths(paths, maxEntries) {
+  if (paths.length <= maxEntries) return paths;
+
+  const grouped = new Map();
+  for (const path of paths) {
+    const folder = getParentFolder(path) || "(root)";
+    if (!grouped.has(folder)) grouped.set(folder, []);
+    grouped.get(folder).push(path);
+  }
+
+  for (const list of grouped.values()) {
+    list.sort((left, right) => left.localeCompare(right));
+  }
+
+  const folders = Array.from(grouped.keys()).sort((left, right) => left.localeCompare(right));
+  const picked = [];
+  let cursor = 0;
+
+  while (picked.length < maxEntries && folders.length > 0) {
+    if (cursor >= folders.length) cursor = 0;
+    const folder = folders[cursor];
+    const queue = grouped.get(folder) ?? [];
+
+    if (queue.length === 0) {
+      folders.splice(cursor, 1);
+      continue;
+    }
+
+    picked.push(queue.shift());
+    cursor += 1;
+  }
+
+  return picked;
+}
+
+export function createIconIndexAgent({ moduleId }) {
   async function browseFolderRecursive(source, folderPath, visited, output) {
     const normalizedPath = toFilePath(folderPath);
     if (!normalizedPath || visited.has(normalizedPath)) return;
@@ -92,10 +161,12 @@ export function createIconLibrary({ moduleId }) {
 
     if (!rootFolder) {
       const emptyCache = {
+        version: 2,
         source,
         rootFolder: "",
         indexedAt: Date.now(),
         entries: [],
+        folderMemory: [],
       };
       await game.settings.set(moduleId, "generatedIconCatalog", emptyCache);
       return emptyCache;
@@ -104,26 +175,47 @@ export function createIconLibrary({ moduleId }) {
     const files = [];
     await browseFolderRecursive(source, rootFolder, new Set(), files);
 
-    const unique = Array.from(new Set(files)).sort((left, right) => left.localeCompare(right));
-    const entries = buildCatalogEntries(unique.slice(0, maxEntries));
+    const unique = Array.from(new Set(files));
+    const balancedPaths = pickBalancedPaths(unique, maxEntries);
+    const entries = buildCatalogEntries(balancedPaths);
+    const folderMemory = buildFolderMemory(unique, rootFolder);
 
     const cache = {
+      version: 2,
       source,
       rootFolder,
       indexedAt: Date.now(),
       entries,
+      folderMemory,
     };
 
     await game.settings.set(moduleId, "generatedIconCatalog", cache);
     return cache;
   }
 
+  async function indexAllIcons() {
+    return rebuildIconCatalog();
+  }
+
+  async function clearMemory() {
+    await game.settings.set(moduleId, "generatedIconCatalog", {
+      version: 2,
+      source: String(game.settings.get(moduleId, "generatedIconSource") || "public"),
+      rootFolder: toFilePath(game.settings.get(moduleId, "generatedIconFolder")),
+      indexedAt: 0,
+      entries: [],
+      folderMemory: [],
+    });
+  }
+
   function getCachedCatalog() {
     const cache = game.settings.get(moduleId, "generatedIconCatalog");
     if (!cache || typeof cache !== "object") return null;
     const entries = Array.isArray(cache.entries) ? cache.entries : [];
+    const folderMemory = Array.isArray(cache.folderMemory) ? cache.folderMemory : [];
 
     return {
+      version: Number(cache.version) || 1,
       source: String(cache.source || game.settings.get(moduleId, "generatedIconSource") || "public"),
       rootFolder: toFilePath(cache.rootFolder),
       indexedAt: Number(cache.indexedAt) || 0,
@@ -135,29 +227,62 @@ export function createIconLibrary({ moduleId }) {
           tokens: Array.isArray(entry.tokens) ? entry.tokens.map((token) => String(token)).slice(0, 24) : [],
         }))
         .filter((entry) => entry.path),
+      folderMemory: folderMemory
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry) => ({
+          folder: toFilePath(entry.folder),
+          relativeFolder: String(entry.relativeFolder || "").trim(),
+          count: Math.max(0, Math.round(Number(entry.count) || 0)),
+          folderTokens: Array.isArray(entry.folderTokens) ? entry.folderTokens.map((token) => String(token)).slice(0, 16) : [],
+          samplePaths: Array.isArray(entry.samplePaths) ? entry.samplePaths.map((path) => toFilePath(path)).slice(0, 5) : [],
+        }))
+        .filter((entry) => entry.folder),
     };
   }
 
   async function ensureIconCatalog() {
     const rootFolder = toFilePath(game.settings.get(moduleId, "generatedIconFolder"));
-    if (!rootFolder) return { source: "public", rootFolder: "", indexedAt: 0, entries: [] };
+    if (!rootFolder) {
+      return {
+        version: 2,
+        source: "public",
+        rootFolder: "",
+        indexedAt: 0,
+        entries: [],
+        folderMemory: [],
+      };
+    }
 
     const source = String(game.settings.get(moduleId, "generatedIconSource") || "public");
     const cached = getCachedCatalog();
 
     if (!cached) {
-      return rebuildIconCatalog();
+      return {
+        version: 2,
+        source,
+        rootFolder,
+        indexedAt: 0,
+        entries: [],
+        folderMemory: [],
+      };
     }
 
-    if (cached.source !== source || cached.rootFolder !== rootFolder) {
-      return rebuildIconCatalog();
+    if (cached.version < 2 || cached.source !== source || cached.rootFolder !== rootFolder) {
+      return {
+        version: 2,
+        source,
+        rootFolder,
+        indexedAt: 0,
+        entries: [],
+        folderMemory: [],
+      };
     }
 
-    if (!Array.isArray(cached.entries) || cached.entries.length === 0) {
-      return rebuildIconCatalog();
-    }
-
-    return cached;
+    return {
+      ...cached,
+      source,
+      rootFolder,
+    };
   }
 
   async function getIconPromptContext() {
@@ -176,6 +301,7 @@ export function createIconLibrary({ moduleId }) {
       rootFolder: catalog.rootFolder,
       iconOptions,
       optionCount: iconOptions.length,
+      folderMemory: (Array.isArray(catalog.folderMemory) ? catalog.folderMemory : []).slice(0, 60),
     };
   }
 
@@ -260,11 +386,26 @@ export function createIconLibrary({ moduleId }) {
     return TYPE_FALLBACK_ICON[normalizedType] || TYPE_FALLBACK_ICON.loot;
   }
 
+  async function askForBestIcon(item, normalizedType) {
+    await ensureIconCatalog();
+    return getBestIconForItemFromCache(item, normalizedType);
+  }
+
+  function getMemorySnapshot() {
+    return getCachedCatalog();
+  }
+
   return {
+    indexAllIcons,
+    clearMemory,
     rebuildIconCatalog,
     ensureIconCatalog,
+    getMemorySnapshot,
     getIconPromptContext,
     getBestIconForItem,
     getBestIconForItemFromCache,
+    askForBestIcon,
   };
 }
+
+export const createIconLibrary = createIconIndexAgent;
