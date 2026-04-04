@@ -63,6 +63,16 @@
   resize: vertical;
 }
 
+.feature-creep-loot-form .stacked {
+  display: block;
+}
+
+.feature-creep-loot-form textarea {
+  width: 100%;
+  min-height: 5rem;
+  resize: vertical;
+}
+
 .feature-creep-generated-summary,
 .feature-creep-generated-inputs {
   margin: 0 0 0.5rem;

@@ -165,7 +165,9 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
     return { items, rationale };
   }
 
-  async function requestMonsterLoot({ actor, apiKey }) {
+  async function requestMonsterLoot({ actor, notes, apiKey }) {
+    const normalizedNotes = String(notes ?? "").trim().slice(0, 1200);
+
     const systemPrompt = [
       "You are a D&D5e (2024) Dungeon Master assistant helping create creature loot tables.",
       "Return ONLY valid JSON, no markdown.",
@@ -173,17 +175,24 @@ export function createAiRequests({ moduleId, requestAnthropicJson, helpers }) {
       "- loot: array of 3-6 items the creature might drop when defeated.",
       "- Each loot item must have: name (string), type (one of: material|weapon|equipment|consumable|tool|treasure), quantity (number >= 1), description (string), weight (object with value (number >= 0) and units (one of: lb|kg)), price (object with value (number) and denomination (one of: cp|sp|ep|gp|pp)).",
       "- Do NOT include any item whose name matches an item in the creature's existingInventory.",
+      "- If optional GM notes are provided, use them as high-priority guidance while still keeping loot plausible for the creature.",
       "- rationale: brief 1-2 sentence explanation of why these items fit this creature.",
       "Focus on items appropriate to the creature's nature, habitat, and CR.",
       "Prefer mundane items for low-CR creatures; magic items are only appropriate at higher CRs.",
       "Do not include commentary outside the JSON.",
     ].join("\n");
 
-    const userPrompt = [
+    const userParts = [
       "Generate loot drop items for this creature. Do NOT suggest any items already in its existingInventory.",
       "Creature snapshot:",
       JSON.stringify(getLootGenerationSnapshot(actor), null, 2),
-    ].join("\n\n");
+    ];
+
+    if (normalizedNotes) {
+      userParts.push(`GM notes for this roll:\n${normalizedNotes}`);
+    }
+
+    const userPrompt = userParts.join("\n\n");
 
     const parsed = await requestAnthropicJson({ systemPrompt, userPrompt, apiKey });
 

@@ -188,6 +188,53 @@ export function createUiPrompts({ moduleId, helpers }) {
     });
   }
 
+  async function promptForLootNotes(actor) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+
+      const dialog = new Dialog({
+        title: game.i18n.localize(`${moduleId}.lootPrompt.title`),
+        content: `
+          <form class="feature-creep-loot-form">
+            <p>${game.i18n.format(`${moduleId}.lootPrompt.content`, {
+              name: foundry.utils.escapeHTML(actor?.name ?? ""),
+            })}</p>
+            <div class="form-group stacked">
+              <label for="feature-creep-loot-notes">${game.i18n.localize(`${moduleId}.lootPrompt.notesLabel`)}</label>
+              <textarea id="feature-creep-loot-notes" name="lootNotes" rows="4" placeholder="${foundry.utils.escapeHTML(game.i18n.localize(`${moduleId}.lootPrompt.notesPlaceholder`))}"></textarea>
+            </div>
+          </form>
+        `,
+        buttons: {
+          cancel: {
+            label: game.i18n.localize("Cancel"),
+            callback: () => finish(null),
+          },
+          submit: {
+            label: game.i18n.localize(`${moduleId}.lootPrompt.submit`),
+            callback: (html) => {
+              const root = html?.[0];
+              const notes = String(root?.querySelector("[name='lootNotes']")?.value || "").trim().slice(0, 1200);
+              finish(notes);
+            },
+          },
+        },
+        default: "submit",
+        close: () => finish(null),
+        render: (html) => {
+          html?.[0]?.querySelector("[name='lootNotes']")?.focus();
+        },
+      });
+
+      dialog.render(true);
+    });
+  }
+
   async function promptForImproviseSelection() {
     const journals = getImproviseCandidateJournals();
     const actors = getJournalCandidateActors();
@@ -351,6 +398,7 @@ export function createUiPrompts({ moduleId, helpers }) {
   return {
     promptForTargetCr,
     promptForCraftingSelection,
+    promptForLootNotes,
     promptForImproviseSelection,
     promptForJournalActorSelection,
   };

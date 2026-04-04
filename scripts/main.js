@@ -181,6 +181,7 @@ const uiPrompts = createUiPrompts({
 
 const promptForTargetCrImpl = uiPrompts.promptForTargetCr;
 const promptForCraftingSelectionImpl = uiPrompts.promptForCraftingSelection;
+const promptForLootNotesImpl = uiPrompts.promptForLootNotes;
 const promptForImproviseSelectionImpl = uiPrompts.promptForImproviseSelection;
 const promptForJournalActorSelectionImpl = uiPrompts.promptForJournalActorSelection;
 
@@ -741,6 +742,10 @@ async function promptForCraftingSelection(actor) {
   return promptForCraftingSelectionImpl(actor);
 }
 
+async function promptForLootNotes(actor) {
+  return promptForLootNotesImpl(actor);
+}
+
 async function generateLootForActor(actor) {
   try {
     if (!canUseModule()) {
@@ -754,11 +759,14 @@ async function generateLootForActor(actor) {
       return;
     }
 
+    const lootNotes = await promptForLootNotes(actor);
+    if (lootNotes === null) return;
+
     ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingLoot`, {
       name: actor.name,
     }));
 
-    const result = await requestMonsterLoot({ actor, apiKey });
+    const result = await requestMonsterLoot({ actor, notes: lootNotes, apiKey });
 
     showLootGenerationDialog(actor, result);
   } catch (error) {
@@ -1039,8 +1047,8 @@ function summarizeCraftingItem(item) {
   };
 }
 
-async function requestMonsterLoot({ actor, apiKey }) {
-  return requestMonsterLootImpl({ actor, apiKey });
+async function requestMonsterLoot({ actor, notes, apiKey }) {
+  return requestMonsterLootImpl({ actor, notes, apiKey });
 }
 
 async function requestJournalItems({ snapshot, actorSnapshot, apiKey }) {
