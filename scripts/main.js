@@ -8,6 +8,7 @@ import { createFameosityPricing } from "./fameosity-pricing.js";
 import { createApplyActions } from "./apply-actions.js";
 import { createUiDialogs } from "./ui-dialogs.js";
 import { createUiPrompts } from "./ui-prompts.js";
+import { createIconLibrary } from "./icon-library.js";
 import {
   canUseModule,
   isDnd5eItemSheet,
@@ -21,6 +22,9 @@ const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const requestAnthropicJson = createAnthropicJsonRequester({
   moduleId: MODULE_ID,
   defaultEndpoint: ANTHROPIC_ENDPOINT,
+});
+const iconLibrary = createIconLibrary({
+  moduleId: MODULE_ID,
 });
 const aiHelpers = createAiHelpers({
   helpers: {
@@ -48,6 +52,7 @@ const aiRequests = createAiRequests({
     parseChallengeRating: aiHelpers.parseChallengeRating,
     normalizeCrGuessConfidence: aiHelpers.normalizeCrGuessConfidence,
     enhancePayloadForKnownPatterns: aiHelpers.enhancePayloadForKnownPatterns,
+    getIconPromptContext: iconLibrary.getIconPromptContext,
   },
 });
 
@@ -251,6 +256,14 @@ Hooks.once("ready", () => {
   if (module) {
     module.api = { improvise: openImproviseDialog };
   }
+
+  void iconLibrary.ensureIconCatalog();
+});
+
+Hooks.on("updateSetting", (setting) => {
+  const key = String(setting?.key || "");
+  if (!key.startsWith(`${MODULE_ID}.generatedIcon`)) return;
+  void iconLibrary.rebuildIconCatalog();
 });
 
 function injectLegacyHeaderButton(sheet, buttons) {
@@ -719,6 +732,8 @@ async function generateCraftedItemsForActor(actor) {
       tool: selection.artisanTool.name,
     }));
 
+    await iconLibrary.ensureIconCatalog();
+
     const result = await requestCraftedItems({
       artisanTool: selection.artisanTool,
       toolProficiencyProfile: getToolProficiencyProfile(actor, selection.artisanTool),
@@ -766,6 +781,8 @@ async function generateLootForActor(actor) {
       name: actor.name,
     }));
 
+    await iconLibrary.ensureIconCatalog();
+
     const result = await requestMonsterLoot({ actor, notes: lootNotes, apiKey });
 
     showLootGenerationDialog(actor, result);
@@ -806,6 +823,8 @@ async function generateItemsFromJournal(sourceDocument) {
     ui.notifications.info(game.i18n.format(`${MODULE_ID}.notifications.generatingJournalItems`, {
       name: snapshot.name,
     }));
+
+    await iconLibrary.ensureIconCatalog();
 
     const result = await requestJournalItems({ snapshot, actorSnapshot, apiKey });
 
@@ -1340,6 +1359,8 @@ function sanitizeGeneratedInventoryItems(items, options = {}) {
         normalized.type = coerceCraftingTypeFromItemText(item, normalized.type);
         normalized.craftingDc = Math.max(5, Math.min(30, Math.round(Number(item.craftingDc) || 10)));
       }
+
+      normalized.img = iconLibrary.getBestIconForItemFromCache(item, normalized.type);
 
       return normalized;
     });

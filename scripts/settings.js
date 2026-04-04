@@ -130,4 +130,60 @@ export function registerModuleSettings(moduleId) {
     range: { min: 0, max: 1, step: 0.05 },
     default: 0.6,
   });
+
+  game.settings.register(moduleId, "generatedIconSource", {
+    name: `${moduleId}.settings.generatedIconSource.name`,
+    hint: `${moduleId}.settings.generatedIconSource.hint`,
+    scope: "world",
+    config: true,
+    type: String,
+    choices: {
+      public: "Public",
+      data: "Data",
+      s3: "S3",
+    },
+    default: "public",
+  });
+
+  game.settings.register(moduleId, "generatedIconFolder", {
+    name: `${moduleId}.settings.generatedIconFolder.name`,
+    hint: `${moduleId}.settings.generatedIconFolder.hint`,
+    scope: "world",
+    config: true,
+    type: String,
+    filePicker: "folder",
+    default: "",
+  });
+
+  game.settings.register(moduleId, "generatedIconMaxEntries", {
+    name: `${moduleId}.settings.generatedIconMaxEntries.name`,
+    hint: `${moduleId}.settings.generatedIconMaxEntries.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 50, max: 3000, step: 50 },
+    default: 800,
+  });
+
+  game.settings.register(moduleId, "generatedIconPromptLimit", {
+    name: `${moduleId}.settings.generatedIconPromptLimit.name`,
+    hint: `${moduleId}.settings.generatedIconPromptLimit.hint`,
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 20, max: 200, step: 10 },
+    default: 80,
+  });
+
+  game.settings.register(moduleId, "generatedIconCatalog", {
+    scope: "world",
+    config: false,
+    type: Object,
+    default: {
+      source: "public",
+      rootFolder: "",
+      indexedAt: 0,
+      entries: [],
+    },
+  });
 }

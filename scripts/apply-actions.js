@@ -144,6 +144,7 @@ export function createApplyActions({ moduleId, helpers }) {
     const createData = items.map((item) => ({
       name: item.name,
       type: item.type,
+      img: String(item.img || "").trim() || undefined,
       system: {
         description: {
           value: item.description ? `<p>${item.description}</p>` : "",
