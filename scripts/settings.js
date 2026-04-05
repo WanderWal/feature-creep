@@ -261,6 +261,7 @@ export function registerModuleSettings(moduleId) {
       rootFolder: "",
       indexedAt: 0,
       entries: [],
+      compendiumEntries: [],
       folderMemory: [],
     },
   });
