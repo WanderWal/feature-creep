@@ -1057,24 +1057,7 @@ function isItemPilesShopIntegrationAvailable() {
 }
 
 async function requestCraftedItems({ artisanTool, toolProficiencyProfile, ingredientResources, notes, apiKey }) {
-  if (game.settings.get(MODULE_ID, "anthropicOrchestrationEnabled")) {
-    try {
-      const orchestrated = await orchestrateCraftGenerationImpl({
-        artisanTool,
-        toolProficiencyProfile,
-        ingredientResources,
-        notes,
-        apiKey,
-      });
-
-      if (orchestrated && typeof orchestrated === "object") {
-        return orchestrated;
-      }
-    } catch (error) {
-      console.warn(`${MODULE_ID} | craft orchestration fallback to legacy`, error);
-    }
-  }
-
+  // Use the stable single-agent path for crafting generation.
   return requestCraftedItemsImpl({ artisanTool, toolProficiencyProfile, ingredientResources, notes, apiKey });
 }
 
@@ -1118,17 +1101,7 @@ function summarizeCraftingItem(item) {
 }
 
 async function requestMonsterLoot({ actor, notes, apiKey }) {
-  if (game.settings.get(MODULE_ID, "anthropicOrchestrationEnabled")) {
-    try {
-      const orchestrated = await orchestrateLootGenerationImpl({ actor, notes, apiKey });
-      if (orchestrated && typeof orchestrated === "object") {
-        return orchestrated;
-      }
-    } catch (error) {
-      console.warn(`${MODULE_ID} | loot orchestration fallback to legacy`, error);
-    }
-  }
-
+  // Use the stable single-agent path for loot generation.
   return requestMonsterLootImpl({ actor, notes, apiKey });
 }
 

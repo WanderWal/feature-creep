@@ -137,7 +137,7 @@ export function registerModuleSettings(moduleId) {
     scope: "world",
     config: true,
     type: Boolean,
-    default: true,
+    default: false,
   });
 
   game.settings.register(moduleId, "anthropicOrchestrationMaxCalls", {
@@ -204,7 +204,7 @@ export function registerModuleSettings(moduleId) {
     scope: "world",
     config: true,
     type: Boolean,
-    default: false,
+    default: true,
   });
 
   game.settings.register(moduleId, "anthropicFinalizerModel", {
@@ -246,7 +246,7 @@ export function registerModuleSettings(moduleId) {
     scope: "world",
     config: true,
     type: Number,
-    range: { min: 50, max: 6000, step: 50 },
+    range: { min: 50, max: 12000, step: 50 },
     default: 800,
   });
 
