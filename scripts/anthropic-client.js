@@ -16,7 +16,7 @@ export function createAnthropicJsonRequester({ moduleId, defaultEndpoint }) {
     const roleModel = resolvedRoleModelKey
       ? String(game.settings.get(moduleId, resolvedRoleModelKey) || "").trim()
       : "";
-    const model = roleModel || baseModel;
+    let model = roleModel || baseModel;
     const resolvedMaxTokens = Number(maxTokens) > 0
       ? Number(maxTokens)
       : Number(game.settings.get(moduleId, "maxTokens")) || 3000;
@@ -49,6 +49,17 @@ export function createAnthropicJsonRequester({ moduleId, defaultEndpoint }) {
     const roundsLimit = Math.max(1, Math.min(10, Number(maxToolRounds) || 4));
     const messages = [{ role: "user", content: userPrompt }];
     let rounds = 0;
+    let attemptedBaseFallback = false;
+
+    const canFallbackToBaseModel = () => Boolean(roleModel && baseModel && roleModel !== baseModel && !attemptedBaseFallback);
+
+    const fallbackToBaseModel = (reason) => {
+      if (!canFallbackToBaseModel()) return false;
+      attemptedBaseFallback = true;
+      model = baseModel;
+      console.warn(`${moduleId} | Anthropic role model failed (${roleModel}). Falling back to base model (${baseModel}). Reason: ${reason}`);
+      return true;
+    };
     try {
       while (true) {
         rounds += 1;
@@ -78,11 +89,19 @@ export function createAnthropicJsonRequester({ moduleId, defaultEndpoint }) {
             timeoutError.code = "AI_TIMEOUT";
             throw timeoutError;
           }
+
+          if (fallbackToBaseModel(error?.message || "network error")) {
+            continue;
+          }
+
           throw error;
         }
 
         if (!response.ok) {
           const text = await response.text();
+          if (fallbackToBaseModel(`status ${response.status}`)) {
+            continue;
+          }
           throw new Error(`AI endpoint error ${response.status}: ${text}`);
         }
 

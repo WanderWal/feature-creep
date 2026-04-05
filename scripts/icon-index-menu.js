@@ -55,7 +55,7 @@ export function createIconIndexAgentMenuClass({ moduleId, iconIndexAgent }) {
     async _saveFormSettings(html) {
       const source = String(html.find('[name="source"]').val() || "public").trim() || "public";
       const folder = String(html.find('[name="folder"]').val() || "").trim();
-      const maxEntries = Math.max(50, Math.min(3000, Number(html.find('[name="maxEntries"]').val()) || 800));
+      const maxEntries = Math.max(50, Math.min(6000, Number(html.find('[name="maxEntries"]').val()) || 800));
       const promptLimit = Math.max(20, Math.min(200, Number(html.find('[name="promptLimit"]').val()) || 80));
 
       await game.settings.set(moduleId, "generatedIconSource", source);
