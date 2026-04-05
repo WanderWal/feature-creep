@@ -52,6 +52,8 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
     getLootGenerationSnapshot,
     searchIconIndex,
   } = helpers;
+  let iconToolStageDisabled = false;
+  let iconToolDisableNotified = false;
 
   function getOrchestrationConfig() {
     return {
@@ -178,6 +180,53 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
     });
   }
 
+  function shouldUseIconToolStage() {
+    if (game.settings.get(moduleId, "anthropicIconLocalOnly")) return false;
+    return !iconToolStageDisabled;
+  }
+
+  function shouldDisableIconToolStage(error) {
+    const message = String(error?.message || "").toLowerCase();
+    if (error instanceof TypeError) return true;
+    if (message.includes("fetch") || message.includes("network") || message.includes("cors")) return true;
+    if (message.includes("endpoint error 4") || message.includes("tool-use")) return true;
+    return false;
+  }
+
+  async function assignIconsLocally(items) {
+    const source = Array.isArray(items) ? items : [];
+    const mapped = [];
+
+    for (const item of source) {
+      const query = String(item?.name || "").trim();
+      const itemType = String(item?.type || "").trim().toLowerCase();
+      if (!query) {
+        mapped.push(item);
+        continue;
+      }
+
+      let result = null;
+      try {
+        result = await searchIconIndex({ query, itemType, limit: 1 });
+      } catch {
+        result = null;
+      }
+
+      const best = Array.isArray(result?.results) ? result.results[0] : null;
+      if (!best?.path) {
+        mapped.push(item);
+        continue;
+      }
+
+      mapped.push({
+        ...item,
+        img: best.path,
+      });
+    }
+
+    return mapped;
+  }
+
   function buildFinalizerPrompts(kind, snapshot, itemsWithIcons, rationale) {
     const key = kind === "loot" ? "loot" : "items";
     const systemPrompt = [
@@ -221,23 +270,37 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
     const plannerRationale = normalizeText(planner?.rationale).slice(0, 1200);
 
     let iconLoot = plannerLoot;
-    try {
-      const iconPrompts = buildIconPrompts("loot", plannerLoot);
-      const iconResult = await callStage({
-        role: "icon",
-        systemPrompt: iconPrompts.systemPrompt,
-        userPrompt: iconPrompts.userPrompt,
-        apiKey,
-        budgetState,
-        config,
-        tools: buildIconTools(),
-        localToolHandler: handleIconToolCall,
-        maxToolRounds: 8,
-      });
-      iconLoot = mergeIconAssignments(plannerLoot, normalizeItemsArray(iconResult, "loot"));
-    } catch (error) {
-      console.warn(`${moduleId} | icon stage fallback (loot)`, error);
-      ui.notifications.warn(game.i18n.localize(`${moduleId}.notifications.orchestrationIconFallback`));
+    if (shouldUseIconToolStage()) {
+      try {
+        const iconPrompts = buildIconPrompts("loot", plannerLoot);
+        const iconResult = await callStage({
+          role: "icon",
+          systemPrompt: iconPrompts.systemPrompt,
+          userPrompt: iconPrompts.userPrompt,
+          apiKey,
+          budgetState,
+          config,
+          tools: buildIconTools(),
+          localToolHandler: handleIconToolCall,
+          maxToolRounds: 8,
+        });
+        iconLoot = mergeIconAssignments(plannerLoot, normalizeItemsArray(iconResult, "loot"));
+      } catch (error) {
+        if (shouldDisableIconToolStage(error)) {
+          iconToolStageDisabled = true;
+          if (!iconToolDisableNotified) {
+            iconToolDisableNotified = true;
+            ui.notifications.warn(game.i18n.localize(`${moduleId}.notifications.orchestrationIconToolDisabled`));
+          }
+        } else {
+          ui.notifications.warn(game.i18n.localize(`${moduleId}.notifications.orchestrationIconFallback`));
+        }
+
+        console.warn(`${moduleId} | icon stage fallback (loot)`, error);
+        iconLoot = await assignIconsLocally(plannerLoot);
+      }
+    } else {
+      iconLoot = await assignIconsLocally(plannerLoot);
     }
 
     try {
@@ -295,23 +358,37 @@ export function createAnthropicOrchestrator({ moduleId, requestAnthropicJson, he
     const plannerRationale = normalizeText(planner?.rationale).slice(0, 1200);
 
     let iconItems = plannerItems;
-    try {
-      const iconPrompts = buildIconPrompts("items", plannerItems);
-      const iconResult = await callStage({
-        role: "icon",
-        systemPrompt: iconPrompts.systemPrompt,
-        userPrompt: iconPrompts.userPrompt,
-        apiKey,
-        budgetState,
-        config,
-        tools: buildIconTools(),
-        localToolHandler: handleIconToolCall,
-        maxToolRounds: 8,
-      });
-      iconItems = mergeIconAssignments(plannerItems, normalizeItemsArray(iconResult, "items"));
-    } catch (error) {
-      console.warn(`${moduleId} | icon stage fallback (craft)`, error);
-      ui.notifications.warn(game.i18n.localize(`${moduleId}.notifications.orchestrationIconFallback`));
+    if (shouldUseIconToolStage()) {
+      try {
+        const iconPrompts = buildIconPrompts("items", plannerItems);
+        const iconResult = await callStage({
+          role: "icon",
+          systemPrompt: iconPrompts.systemPrompt,
+          userPrompt: iconPrompts.userPrompt,
+          apiKey,
+          budgetState,
+          config,
+          tools: buildIconTools(),
+          localToolHandler: handleIconToolCall,
+          maxToolRounds: 8,
+        });
+        iconItems = mergeIconAssignments(plannerItems, normalizeItemsArray(iconResult, "items"));
+      } catch (error) {
+        if (shouldDisableIconToolStage(error)) {
+          iconToolStageDisabled = true;
+          if (!iconToolDisableNotified) {
+            iconToolDisableNotified = true;
+            ui.notifications.warn(game.i18n.localize(`${moduleId}.notifications.orchestrationIconToolDisabled`));
+          }
+        } else {
+          ui.notifications.warn(game.i18n.localize(`${moduleId}.notifications.orchestrationIconFallback`));
+        }
+
+        console.warn(`${moduleId} | icon stage fallback (craft)`, error);
+        iconItems = await assignIconsLocally(plannerItems);
+      }
+    } else {
+      iconItems = await assignIconsLocally(plannerItems);
     }
 
     try {

@@ -299,7 +299,7 @@ export function createIconIndexAgent({ moduleId }) {
   async function rebuildIconCatalog() {
     const source = String(game.settings.get(moduleId, "generatedIconSource") || "public");
     const rootFolder = toFilePath(game.settings.get(moduleId, "generatedIconFolder"));
-    const maxEntries = Math.max(50, Math.min(3000, Number(game.settings.get(moduleId, "generatedIconMaxEntries")) || 800));
+    const maxEntries = Math.max(50, Math.min(6000, Number(game.settings.get(moduleId, "generatedIconMaxEntries")) || 800));
 
     if (!rootFolder) {
       const emptyCache = {

@@ -198,6 +198,15 @@ export function registerModuleSettings(moduleId) {
     default: "",
   });
 
+  game.settings.register(moduleId, "anthropicIconLocalOnly", {
+    name: `${moduleId}.settings.anthropicIconLocalOnly.name`,
+    hint: `${moduleId}.settings.anthropicIconLocalOnly.hint`,
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+  });
+
   game.settings.register(moduleId, "anthropicFinalizerModel", {
     name: `${moduleId}.settings.anthropicFinalizerModel.name`,
     hint: `${moduleId}.settings.anthropicFinalizerModel.hint`,
@@ -237,7 +246,7 @@ export function registerModuleSettings(moduleId) {
     scope: "world",
     config: true,
     type: Number,
-    range: { min: 50, max: 3000, step: 50 },
+    range: { min: 50, max: 6000, step: 50 },
     default: 800,
   });
 
